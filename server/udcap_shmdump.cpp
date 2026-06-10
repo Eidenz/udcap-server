@@ -97,6 +97,12 @@ main(void)
 			        curl(snap.skel.index.proximal), curl(snap.skel.middle.proximal),
 			        curl(snap.skel.ring.proximal), curl(snap.skel.little.proximal), snap.btn_a, snap.btn_b,
 			        snap.btn_menu, snap.btn_joy, snap.joy_x, snap.joy_y, snap.trigger, snap.grip);
+			// Per-joint breakdown (index & middle) to compare hands: prox/inter/distal.
+			fprintf(stderr,
+			        "      index[p=%.2f i=%.2f d=%.2f] middle[p=%.2f i=%.2f d=%.2f]\n",
+			        curl(snap.skel.index.proximal), curl(snap.skel.index.intermediate),
+			        curl(snap.skel.index.distal), curl(snap.skel.middle.proximal),
+			        curl(snap.skel.middle.intermediate), curl(snap.skel.middle.distal));
 		}
 		fprintf(stderr, "----\n");
 		fflush(stderr);

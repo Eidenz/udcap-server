@@ -255,15 +255,23 @@ main(int argc, char **argv)
 				g_shm->hands[h].curl_min[f] = 0.0f;
 				g_shm->hands[h].curl_max[f] = 1.0f;
 			}
-			// Grip/menu correction: 0 = grip tracks the hand (menu on the back);
-			// tuned live via the GUI.
-			g_shm->hands[h].grip_pos[0] = 0.0f;
-			g_shm->hands[h].grip_pos[1] = 0.0f;
-			g_shm->hands[h].grip_pos[2] = 0.0f;
-			g_shm->hands[h].grip_rot_deg[0] = 0.0f;
-			g_shm->hands[h].grip_rot_deg[1] = 0.0f;
-			g_shm->hands[h].grip_rot_deg[2] = 0.0f;
 		}
+
+		// Grip/menu defaults: place VRChat's hand menu on the palm side (tuned on
+		// hardware). Mirrored between hands.
+		L.grip_pos[0] = 0.06f;
+		L.grip_pos[1] = -0.06f;
+		L.grip_pos[2] = 0.01f;
+		L.grip_rot_deg[0] = 70.0f;
+		L.grip_rot_deg[1] = -5.0f;
+		L.grip_rot_deg[2] = -55.0f;
+
+		R.grip_pos[0] = 0.0f;
+		R.grip_pos[1] = -0.06f;
+		R.grip_pos[2] = 0.01f;
+		R.grip_rot_deg[0] = 55.0f;
+		R.grip_rot_deg[1] = -5.0f;
+		R.grip_rot_deg[2] = 70.0f;
 	}
 
 	if (ports.empty()) {
