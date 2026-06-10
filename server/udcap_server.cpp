@@ -46,6 +46,11 @@
 	} while (0)
 
 static std::atomic_bool g_stop{false};
+// Set in the packet callback on a power-button tap (a 1-frame pulse, easy for the
+// main loop to miss), consumed by the main loop. The latch keeps btn_power lit
+// briefly so the UI shows the press.
+static std::atomic_bool g_power_tap{false};
+static std::atomic<uint64_t> g_power_latch_ns{0};
 static void
 on_signal(int)
 {
@@ -414,6 +419,13 @@ main(int argc, char **argv)
 				H.btn_menu = p->button.btnMenu;
 				H.btn_joy = p->button.btnJoyStick;
 				H.btn_power = p->button.btnPower;
+				if (p->button.btnPower) {
+					g_power_tap.store(true, std::memory_order_relaxed);
+					g_power_latch_ns.store(now_ns() + 350000000ull, std::memory_order_relaxed);
+				}
+				if (now_ns() < g_power_latch_ns.load(std::memory_order_relaxed)) {
+					H.btn_power = 1; // brief UI flash (the raw pulse is 1 frame)
+				}
 				H.trigger = p->button.trigger;
 				H.grip = p->button.grip;
 				H.trackpad = p->button.trackpad;
@@ -539,7 +551,6 @@ main(int argc, char **argv)
 
 	uint64_t last_fps_ns = now_ns();
 	uint32_t last_count[UDCAP_HAND_COUNT] = {0, 0};
-	uint32_t prev_power[UDCAP_HAND_COUNT] = {0, 0};
 
 	while (!g_stop) {
 		// Haptics.
@@ -577,21 +588,16 @@ main(int argc, char **argv)
 			__atomic_store_n(&g_shm->cmd_ack, cs, __ATOMIC_RELEASE);
 		}
 
-		// Glove power (side) button (rising edge, either hand): start
-		// auto-calibration, or cancel it if one is running (escape hatch in VR).
-		// Power isn't mapped to any controller input, so there's no conflict.
-		for (int i = 0; i < UDCAP_HAND_COUNT; i++) {
-			uint32_t m = g_shm->hands[i].btn_power;
-			if (m && !prev_power[i]) {
-				if (g_autocal_active) {
-					g_autocal_active = false;
-					g_shm->calib_state = UDCAP_CALIB_IDLE;
-					LOGP("[server] auto-calibration cancelled (power button)\n");
-				} else {
-					start_autocal(ctxs);
-				}
+		// Glove power (side) button tap -> start / cancel auto-calibration. The tap
+		// is a 1-frame pulse caught in the packet callback; we just consume it.
+		if (g_power_tap.exchange(false, std::memory_order_relaxed)) {
+			if (g_autocal_active) {
+				g_autocal_active = false;
+				g_shm->calib_state = UDCAP_CALIB_IDLE;
+				LOGP("[server] auto-calibration cancelled (power tap)\n");
+			} else {
+				start_autocal(ctxs);
 			}
-			prev_power[i] = m;
 		}
 		tick_autocal(ctxs);
 
