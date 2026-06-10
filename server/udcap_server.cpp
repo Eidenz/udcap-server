@@ -371,6 +371,7 @@ main(int argc, char **argv)
 		R.grip_rot_deg[2] = 75.0f;
 
 		g_shm->curl_gain = 1.5f; // full fist by default (also the maximum)
+		g_shm->splay_gain = 1.0f;
 
 		// Per-hand input mapping defaults.
 		for (int h = 0; h < UDCAP_HAND_COUNT; h++) {
@@ -617,6 +618,12 @@ main(int argc, char **argv)
 	uint64_t last_fps_ns = now_ns();
 	uint32_t last_count[UDCAP_HAND_COUNT] = {0, 0};
 
+	// Reconnection watchdog: nudge the stream back if a hand goes quiet.
+	uint64_t wd_pkt_ns[UDCAP_HAND_COUNT] = {now_ns(), now_ns()};
+	uint32_t wd_count[UDCAP_HAND_COUNT] = {0, 0};
+	uint64_t wd_nudge_ns[UDCAP_HAND_COUNT] = {0, 0};
+	bool wd_active[UDCAP_HAND_COUNT] = {false, false};
+
 	while (!g_stop) {
 		// Haptics.
 		for (int i = 0; i < UDCAP_HAND_COUNT; i++) {
@@ -677,6 +684,29 @@ main(int argc, char **argv)
 				last_count[i] = c;
 			}
 			last_fps_ns = now;
+
+			// Reconnection: a hand that was streaming and went quiet for >2.5s gets
+			// its data stream re-triggered (handles a dropped 2.4GHz link where the
+			// dongle stops sending). The server keeps running, so the shm stays
+			// valid and Monado does not need restarting.
+			for (int i = 0; i < UDCAP_HAND_COUNT; i++) {
+				uint32_t c = g_pkt_count[i].load(std::memory_order_relaxed);
+				if (c != wd_count[i]) {
+					wd_count[i] = c;
+					wd_pkt_ns[i] = now;
+					wd_active[i] = true;
+				} else if (wd_active[i] && core_by_hand[i] && now - wd_pkt_ns[i] > 2500000000ull &&
+				           now - wd_nudge_ns[i] > 1500000000ull) {
+					wd_nudge_ns[i] = now;
+					LOGP("[server] hand %d quiet, re-triggering stream...\n", i);
+					try {
+						core_by_hand[i]->mcuGetLinkState();
+						core_by_hand[i]->mcuStartData();
+					} catch (const std::exception &e) {
+						LOGP("[server] reconnect nudge failed: %s\n", e.what());
+					}
+				}
+			}
 		}
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
