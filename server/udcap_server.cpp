@@ -338,6 +338,12 @@ main(int argc, char **argv)
 		R.grip_rot_deg[2] = 75.0f;
 
 		g_shm->curl_gain = 1.5f; // full fist by default (also the maximum)
+
+		// Default button map: A->A, B->B, System->A+B(menu), Stick->Stick.
+		g_shm->btn_src[UDCAP_OUT_A] = UDCAP_SRC_A;
+		g_shm->btn_src[UDCAP_OUT_B] = UDCAP_SRC_B;
+		g_shm->btn_src[UDCAP_OUT_SYSTEM] = UDCAP_SRC_MENU;
+		g_shm->btn_src[UDCAP_OUT_STICK] = UDCAP_SRC_STICK;
 	}
 
 	if (ports.empty()) {
