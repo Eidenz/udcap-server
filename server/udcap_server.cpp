@@ -255,6 +255,14 @@ main(int argc, char **argv)
 				g_shm->hands[h].curl_min[f] = 0.0f;
 				g_shm->hands[h].curl_max[f] = 1.0f;
 			}
+			// Grip/menu correction: 0 = grip tracks the hand (menu on the back);
+			// tuned live via the GUI.
+			g_shm->hands[h].grip_pos[0] = 0.0f;
+			g_shm->hands[h].grip_pos[1] = 0.0f;
+			g_shm->hands[h].grip_pos[2] = 0.0f;
+			g_shm->hands[h].grip_rot_deg[0] = 0.0f;
+			g_shm->hands[h].grip_rot_deg[1] = 0.0f;
+			g_shm->hands[h].grip_rot_deg[2] = 0.0f;
 		}
 	}
 
