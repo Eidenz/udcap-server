@@ -266,12 +266,14 @@ main(int argc, char **argv)
 		L.grip_rot_deg[1] = -5.0f;
 		L.grip_rot_deg[2] = -55.0f;
 
-		R.grip_pos[0] = 0.0f;
+		R.grip_pos[0] = -0.06f;
 		R.grip_pos[1] = -0.06f;
 		R.grip_pos[2] = 0.01f;
-		R.grip_rot_deg[0] = 55.0f;
+		R.grip_rot_deg[0] = 70.0f;
 		R.grip_rot_deg[1] = -5.0f;
-		R.grip_rot_deg[2] = 70.0f;
+		R.grip_rot_deg[2] = 75.0f;
+
+		g_shm->curl_gain = 1.5f; // full fist by default (also the maximum)
 	}
 
 	if (ports.empty()) {
