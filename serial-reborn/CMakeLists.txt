@@ -22,7 +22,7 @@ CPMAddPackage(
         NAME hidapi
         GIT_REPOSITORY https://github.com/libusb/hidapi
         GIT_TAG hidapi-0.14.0
-        OPTIONS "HIDAPI_BUILD_HIDTEST=OFF" "HIDAPI_WITH_TESTS=OFF"
+        OPTIONS "HIDAPI_BUILD_HIDTEST=OFF" "HIDAPI_WITH_TESTS=OFF" "BUILD_SHARED_LIBS OFF"
 )
 
 CPMAddPackage(
