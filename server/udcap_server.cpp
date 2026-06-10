@@ -151,6 +151,39 @@ struct CoreCtx
 
 // Execute a control-app command (currently the guided calibration steps) on all
 // linked hands and report progress via g_shm->calib_state.
+// 0..1 curl from a bone quaternion (matches the driver's UDCAP_MAX_BEND_RAD).
+static float
+bone_curl01(const udcap_quat &qq)
+{
+	float w = std::fabs(qq.w);
+	if (w > 1.0f) {
+		w = 1.0f;
+	}
+	float c = (2.0f * std::acos(w)) / 1.35f;
+	if (c < 0.0f) {
+		c = 0.0f;
+	}
+	if (c > 1.0f) {
+		c = 1.0f;
+	}
+	return c;
+}
+static float
+remap01(float v, float lo, float hi)
+{
+	if (hi - lo < 0.01f) {
+		return v;
+	}
+	float r = (v - lo) / (hi - lo);
+	if (r < 0.0f) {
+		r = 0.0f;
+	}
+	if (r > 1.0f) {
+		r = 1.0f;
+	}
+	return r;
+}
+
 static void
 handle_command(uint32_t code, std::vector<std::shared_ptr<CoreCtx>> &ctxs)
 {
@@ -339,11 +372,22 @@ main(int argc, char **argv)
 
 		g_shm->curl_gain = 1.5f; // full fist by default (also the maximum)
 
-		// Default button map: A->A, B->B, System->A+B(menu), Stick->Stick.
-		g_shm->btn_src[UDCAP_OUT_A] = UDCAP_SRC_A;
-		g_shm->btn_src[UDCAP_OUT_B] = UDCAP_SRC_B;
-		g_shm->btn_src[UDCAP_OUT_SYSTEM] = UDCAP_SRC_MENU;
-		g_shm->btn_src[UDCAP_OUT_STICK] = UDCAP_SRC_STICK;
+		// Per-hand input mapping defaults.
+		for (int h = 0; h < UDCAP_HAND_COUNT; h++) {
+			udcap_hand &H = g_shm->hands[h];
+			H.btn_src[UDCAP_OUT_A] = UDCAP_SRC_A;
+			H.btn_src[UDCAP_OUT_B] = UDCAP_SRC_B;
+			H.btn_src[UDCAP_OUT_SYSTEM] = UDCAP_SRC_MENU;
+			H.btn_src[UDCAP_OUT_STICK] = UDCAP_SRC_STICK;
+			H.btn_src[UDCAP_OUT_TRIGGER] = UDCAP_SRC_NONE;
+			H.btn_src[UDCAP_OUT_GRIP] = UDCAP_SRC_NONE;
+			H.trigger_finger = 1;             // index
+			H.grip_finger = UDCAP_FINGER_GRIP; // average of middle+ring+little
+			H.trigger_min = 0.15f;
+			H.trigger_max = 0.85f;
+			H.grip_min = 0.15f;
+			H.grip_max = 0.85f;
+		}
 	}
 
 	if (ports.empty()) {
@@ -432,8 +476,7 @@ main(int argc, char **argv)
 				if (now_ns() < g_power_latch_ns.load(std::memory_order_relaxed)) {
 					H.btn_power = 1; // brief UI flash (the raw pulse is 1 frame)
 				}
-				H.trigger = p->button.trigger;
-				H.grip = p->button.grip;
+				// trigger/grip are computed from the skeleton (see above).
 				H.trackpad = p->button.trackpad;
 				break;
 			case CMD_INPUT_JOYSTICK:
@@ -459,6 +502,22 @@ main(int argc, char **argv)
 				cf(H.skel.ring, q.ringFinger);
 				cf(H.skel.little, q.littleFinger);
 				H.calibrated = 1;
+
+				// Analog trigger/grip from the configured finger(s) + thresholds.
+				// Config lives in the live shm hand (written by the server/GUI),
+				// not the shadow H we publish from.
+				const udcap_hand &cfg = g_shm->hands[idx];
+				float cu[5] = {
+				    bone_curl01(H.skel.thumb.proximal), bone_curl01(H.skel.index.proximal),
+				    bone_curl01(H.skel.middle.proximal), bone_curl01(H.skel.ring.proximal),
+				    bone_curl01(H.skel.little.proximal),
+				};
+				uint8_t tf = cfg.trigger_finger < 5 ? cfg.trigger_finger : 1;
+				H.trigger = remap01(cu[tf], cfg.trigger_min, cfg.trigger_max);
+				float gsrc = (cfg.grip_finger == UDCAP_FINGER_GRIP)
+				                 ? (cu[2] + cu[3] + cu[4]) / 3.0f
+				                 : cu[cfg.grip_finger < 5 ? cfg.grip_finger : 2];
+				H.grip = remap01(gsrc, cfg.grip_min, cfg.grip_max);
 				break;
 			}
 			default: break;
