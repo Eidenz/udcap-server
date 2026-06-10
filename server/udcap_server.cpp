@@ -229,21 +229,22 @@ main(int argc, char **argv)
 		LOGP("[server] right hand -> tracker '%s'\n", tracker_right.c_str());
 	}
 
-	// Default pose offsets: UDCAP's official "Space Orientation" values for a
-	// Vive Tracker 3.0. Tunable live via udcap-offset (or a GUI).
+	// Default pose offsets. The tracker sits at the controller grip, so no
+	// position offset is needed in Monado's frame (verified on hardware); only
+	// the rotation aligns the grip axis. Tunable live via udcap-offset / the GUI.
 	{
 		udcap_hand &L = g_shm->hands[UDCAP_HAND_LEFT];
-		L.offset_pos[0] = 0.10f;
-		L.offset_pos[1] = 0.10f;
-		L.offset_pos[2] = -0.05f;
+		L.offset_pos[0] = 0.0f;
+		L.offset_pos[1] = 0.0f;
+		L.offset_pos[2] = 0.0f;
 		L.offset_rot_deg[0] = 45.0f;
 		L.offset_rot_deg[1] = 85.0f;
 		L.offset_rot_deg[2] = 0.0f;
 
 		udcap_hand &R = g_shm->hands[UDCAP_HAND_RIGHT];
-		R.offset_pos[0] = -0.10f;
-		R.offset_pos[1] = 0.10f;
-		R.offset_pos[2] = -0.05f;
+		R.offset_pos[0] = 0.0f;
+		R.offset_pos[1] = 0.0f;
+		R.offset_pos[2] = 0.0f;
 		R.offset_rot_deg[0] = 45.0f;
 		R.offset_rot_deg[1] = -85.0f;
 		R.offset_rot_deg[2] = 0.0f;
