@@ -247,6 +247,14 @@ main(int argc, char **argv)
 		R.offset_rot_deg[0] = 45.0f;
 		R.offset_rot_deg[1] = -85.0f;
 		R.offset_rot_deg[2] = 0.0f;
+
+		// Identity curl remap by default (no scaling).
+		for (int h = 0; h < UDCAP_HAND_COUNT; h++) {
+			for (int f = 0; f < 5; f++) {
+				g_shm->hands[h].curl_min[f] = 0.0f;
+				g_shm->hands[h].curl_max[f] = 1.0f;
+			}
+		}
 	}
 
 	if (ports.empty()) {
