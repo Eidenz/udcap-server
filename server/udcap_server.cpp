@@ -185,6 +185,65 @@ handle_command(uint32_t code, std::vector<std::shared_ptr<CoreCtx>> &ctxs)
 	LOGP("[server] command %u -> calib_state %u\n", code, g_shm->calib_state);
 }
 
+// ---- Autonomous timed calibration (glove menu button or CMD_CALIB_AUTO) ----
+// Runs the whole fist -> together -> spread -> complete sequence on a timer, so
+// it can be done in VR without the GUI. The GUI just watches calib_state for the
+// visuals and audio cues.
+static bool g_autocal_active = false;
+static int g_autocal_step = 0; // 0=get ready, 1=fist, 2=together, 3=spread, 4=finalize
+static uint64_t g_autocal_next_ns = 0;
+static const uint64_t AUTOCAL_READY_NS = 3000000000ull; // "get ready" before the fist
+static const uint64_t AUTOCAL_HOLD_NS = 4000000000ull;  // hold each pose ~4s
+
+static void
+start_autocal(std::vector<std::shared_ptr<CoreCtx>> &ctxs)
+{
+	if (g_autocal_active) {
+		return;
+	}
+	handle_command(UDCAP_CMD_CALIB_START, ctxs); // runCalibration (sets STARTED)
+	g_shm->calib_state = UDCAP_CALIB_READY;       // ...but show a "get ready" first
+	g_autocal_active = true;
+	g_autocal_step = 0;
+	g_autocal_next_ns = now_ns() + AUTOCAL_READY_NS;
+	LOGP("[server] auto-calibration started (get ready)\n");
+}
+
+static void
+tick_autocal(std::vector<std::shared_ptr<CoreCtx>> &ctxs)
+{
+	if (!g_autocal_active || now_ns() < g_autocal_next_ns) {
+		return;
+	}
+	switch (g_autocal_step) {
+	case 0: // get ready -> first pose
+		g_shm->calib_state = UDCAP_CALIB_STARTED;
+		g_autocal_step = 1;
+		g_autocal_next_ns = now_ns() + AUTOCAL_HOLD_NS;
+		break;
+	case 1:
+		handle_command(UDCAP_CMD_CALIB_FIST, ctxs);
+		g_autocal_step = 2;
+		g_autocal_next_ns = now_ns() + AUTOCAL_HOLD_NS;
+		break;
+	case 2:
+		handle_command(UDCAP_CMD_CALIB_TOGETHER, ctxs);
+		g_autocal_step = 3;
+		g_autocal_next_ns = now_ns() + AUTOCAL_HOLD_NS;
+		break;
+	case 3:
+		handle_command(UDCAP_CMD_CALIB_SPREAD, ctxs);
+		g_autocal_step = 4;
+		g_autocal_next_ns = now_ns() + 700000000ull; // brief pause before finalizing
+		break;
+	default:
+		handle_command(UDCAP_CMD_CALIB_COMPLETE, ctxs);
+		g_autocal_active = false;
+		LOGP("[server] auto-calibration complete\n");
+		break;
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -480,6 +539,7 @@ main(int argc, char **argv)
 
 	uint64_t last_fps_ns = now_ns();
 	uint32_t last_count[UDCAP_HAND_COUNT] = {0, 0};
+	uint32_t prev_power[UDCAP_HAND_COUNT] = {0, 0};
 
 	while (!g_stop) {
 		// Haptics.
@@ -505,9 +565,35 @@ main(int argc, char **argv)
 		uint32_t cs = __atomic_load_n(&g_shm->cmd_seq, __ATOMIC_ACQUIRE);
 		if (cs != last_cmd) {
 			last_cmd = cs;
-			handle_command(g_shm->cmd_code, ctxs);
+			uint32_t code = g_shm->cmd_code;
+			if (code == UDCAP_CMD_CALIB_AUTO) {
+				start_autocal(ctxs);
+			} else {
+				if (code == UDCAP_CMD_CALIB_CANCEL) {
+					g_autocal_active = false;
+				}
+				handle_command(code, ctxs);
+			}
 			__atomic_store_n(&g_shm->cmd_ack, cs, __ATOMIC_RELEASE);
 		}
+
+		// Glove power (side) button (rising edge, either hand): start
+		// auto-calibration, or cancel it if one is running (escape hatch in VR).
+		// Power isn't mapped to any controller input, so there's no conflict.
+		for (int i = 0; i < UDCAP_HAND_COUNT; i++) {
+			uint32_t m = g_shm->hands[i].btn_power;
+			if (m && !prev_power[i]) {
+				if (g_autocal_active) {
+					g_autocal_active = false;
+					g_shm->calib_state = UDCAP_CALIB_IDLE;
+					LOGP("[server] auto-calibration cancelled (power button)\n");
+				} else {
+					start_autocal(ctxs);
+				}
+			}
+			prev_power[i] = m;
+		}
+		tick_autocal(ctxs);
 
 		// FPS, every ~500ms.
 		uint64_t now = now_ns();
