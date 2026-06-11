@@ -95,6 +95,7 @@ EVRInitError GloveDevice::Activate(uint32_t object_id)
 	                          VRScalarUnits_NormalizedTwoSided);
 	in->CreateScalarComponent(props_, "/input/thumbstick/y", &c_stick_y_, VRScalarType_Absolute,
 	                          VRScalarUnits_NormalizedTwoSided);
+	in->CreateBooleanComponent(props_, "/input/trackpad/touch", &c_trackpad_touch_);
 
 	in->CreateSkeletonComponent(
 	    props_, hand_ == UDCAP_HAND_LEFT ? "/input/skeleton/left" : "/input/skeleton/right",
@@ -242,6 +243,7 @@ void GloveDevice::run_frame()
 	in->UpdateScalarComponent(c_grip_force_, grip, 0);
 	in->UpdateScalarComponent(c_stick_x_, h.joy_x, 0);
 	in->UpdateScalarComponent(c_stick_y_, h.joy_y, 0);
+	in->UpdateBooleanComponent(c_trackpad_touch_, h.trackpad > h.trackpad_threshold, 0);
 
 	// Skeletal finger tracking (curl per finger + splay scaled by the shm gain).
 	const float splay_gain = shm_->raw() ? shm_->raw()->splay_gain : 1.0f;

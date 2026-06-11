@@ -390,6 +390,8 @@ main(int argc, char **argv)
 			H.trigger_max = 0.85f;
 			H.grip_min = 0.6f;
 			H.grip_max = 0.85f;
+			H.stick_deadzone = 0.1f;
+			H.trackpad_threshold = 0.1f;
 		}
 	}
 
@@ -482,10 +484,23 @@ main(int argc, char **argv)
 				// trigger/grip are computed from the skeleton (see above).
 				H.trackpad = p->button.trackpad;
 				break;
-			case CMD_INPUT_JOYSTICK:
-				H.joy_x = p->joystickData.joyX;
-				H.joy_y = p->joystickData.joyY;
+			case CMD_INPUT_JOYSTICK: {
+				// Radial deadzone (rescaled so motion past the edge starts at 0).
+				float jx = p->joystickData.joyX, jy = p->joystickData.joyY;
+				float dz = g_shm->hands[idx].stick_deadzone;
+				float mag = sqrtf(jx * jx + jy * jy);
+				if (mag < 1e-5f || mag <= dz) {
+					jx = 0.0f;
+					jy = 0.0f;
+				} else {
+					float s = (mag - dz) / (1.0f - dz) / mag;
+					jx = std::fmax(-1.0f, std::fmin(1.0f, jx * s));
+					jy = std::fmax(-1.0f, std::fmin(1.0f, jy * s));
+				}
+				H.joy_x = jx;
+				H.joy_y = jy;
 				break;
+			}
 			case CMD_SKELETON_QUATERNION: {
 				const HandQuaternion &q = p->skeletonQuaternion;
 				auto cp = [](udcap_quat &d, const BoneQuaternion &s) {

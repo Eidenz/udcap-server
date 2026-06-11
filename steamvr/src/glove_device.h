@@ -49,6 +49,7 @@ private:
 	// Input components (Index layout).
 	vr::VRInputComponentHandle_t c_a_ = 0, c_b_ = 0, c_sys_ = 0, c_stick_click_ = 0, c_trig_click_ = 0;
 	vr::VRInputComponentHandle_t c_trig_ = 0, c_grip_ = 0, c_grip_force_ = 0, c_stick_x_ = 0, c_stick_y_ = 0;
+	vr::VRInputComponentHandle_t c_trackpad_touch_ = 0;
 
 	// Skeletal (finger) input.
 	vr::VRInputComponentHandle_t c_skeleton_ = 0;
