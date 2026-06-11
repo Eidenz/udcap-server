@@ -26,15 +26,14 @@ clamp(float v, float lo, float hi)
 	return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// Bend magnitude of one bone quaternion, in radians.
+// Continuous rotation angle of one bone quaternion, in radians. Using
+// 2*atan2(|vec|, w) (not 2*acos(|w|)) keeps it monotonic past 180° so a hard
+// curl never folds back toward 0.
 static float
 bone_curl(const udcap_quat &q)
 {
-	float w = std::fabs(q.w);
-	if (w > 1.0f) {
-		w = 1.0f;
-	}
-	return 2.0f * std::acos(w);
+	float v = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z);
+	return 2.0f * std::atan2(v, q.w);
 }
 
 // Per-finger curl 0..1 (1 = fist) on the GUI/Monado scale (proximal bend /
