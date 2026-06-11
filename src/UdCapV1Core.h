@@ -393,6 +393,8 @@ private:
     UdCapV1HandCaliAdduction caliAdduction;
     UdCapV1HandCaliProtract caliProtract;
     UdCapV1HandData lastAngle{};
+    UdCapV1HandData avgAngle{}; // smoothed reading for calibration capture
+    bool avgInit = false;
     UdCapV1LastCaliData lastCaliData;
     volatile UdCapV1JoystickCaliStat joystickCaliStat = UDCAP_V1_JOYSTICK_CALI_STAT_OK;
     float xCenterData = 1850.0;

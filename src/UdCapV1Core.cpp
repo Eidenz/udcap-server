@@ -418,6 +418,21 @@ void UdCapV1Core::parsePacket(const std::vector<uint8_t> &packetBuffer) {
             hasController = true;
         }
 
+        // Smoothed sensor reading (exponential moving average, ~10-frame window).
+        // Calibration captures this instead of a single frame, so a moment of
+        // wobble while holding a pose no longer poisons the whole range.
+        {
+            float *avp = reinterpret_cast<float *>(&avgAngle);
+            const float *lp = reinterpret_cast<const float *>(&lastAngle);
+            if (!avgInit) {
+                for (int i = 0; i < 19; i++) avp[i] = lp[i];
+                avgInit = true;
+            } else {
+                constexpr float a = 0.12f;
+                for (int i = 0; i < 19; i++) avp[i] = (1.0f - a) * avp[i] + a * lp[i];
+            }
+        }
+
         if (caliStat == UDCAP_V1_HAND_CALI_STAT_COMPLETED) {
             double f[12]{
                 lastAngle.f4,
@@ -861,44 +876,43 @@ void UdCapV1Core::captureCalibrationData(UdCapV1HandCaliType type) {
     if (caliStat == UDCAP_V1_HAND_CALI_STAT_COMPLETED) {
         throw std::runtime_error("Calibration already completed");
     }
+    // Capture the smoothed reading rather than a single (possibly wobbly) frame.
+    const UdCapV1HandData &a = avgAngle;
     if (type == UDCAP_V1_HAND_CALI_TYPE_ALL) {
         throw std::runtime_error("Invalid calibration type");
     } else if (type == UDCAP_V1_HAND_CALI_TYPE_FIST) {
-        // TODO improve accuracy
         caliFist.captured = true;
-        caliFist.h4 = lastAngle.f4;
-        caliFist.h5 = lastAngle.f5;
-        caliFist.h6 = lastAngle.f6;
-        caliFist.h7 = lastAngle.f7;
-        caliFist.h9 = lastAngle.f9;
-        caliFist.h10 = lastAngle.f10;
-        caliFist.h12 = lastAngle.f12;
-        caliFist.h13 = lastAngle.f13;
-        caliFist.h15 = lastAngle.f15;
+        caliFist.h4 = a.f4;
+        caliFist.h5 = a.f5;
+        caliFist.h6 = a.f6;
+        caliFist.h7 = a.f7;
+        caliFist.h9 = a.f9;
+        caliFist.h10 = a.f10;
+        caliFist.h12 = a.f12;
+        caliFist.h13 = a.f13;
+        caliFist.h15 = a.f15;
     } else if (type == UDCAP_V1_HAND_CALI_TYPE_ADDUCTION) {
-        // TODO improve accuracy
         caliAdduction.captured = true;
-        caliAdduction.n1 = lastAngle.f1;
-        caliAdduction.n2 = lastAngle.f2;
-        caliAdduction.n3 = lastAngle.f3;
-        caliAdduction.n4 = lastAngle.f4;
-        caliAdduction.n5 = lastAngle.f5;
-        caliAdduction.n6 = lastAngle.f6;
-        caliAdduction.n7 = lastAngle.f7;
-        caliAdduction.n8 = lastAngle.f8;
-        caliAdduction.n9 = lastAngle.f9;
-        caliAdduction.n10 = lastAngle.f10;
-        caliAdduction.n11 = lastAngle.f11;
-        caliAdduction.n12 = lastAngle.f12;
-        caliAdduction.n13 = lastAngle.f13;
-        caliAdduction.n14 = lastAngle.f14;
-        caliAdduction.n15 = lastAngle.f15;
+        caliAdduction.n1 = a.f1;
+        caliAdduction.n2 = a.f2;
+        caliAdduction.n3 = a.f3;
+        caliAdduction.n4 = a.f4;
+        caliAdduction.n5 = a.f5;
+        caliAdduction.n6 = a.f6;
+        caliAdduction.n7 = a.f7;
+        caliAdduction.n8 = a.f8;
+        caliAdduction.n9 = a.f9;
+        caliAdduction.n10 = a.f10;
+        caliAdduction.n11 = a.f11;
+        caliAdduction.n12 = a.f12;
+        caliAdduction.n13 = a.f13;
+        caliAdduction.n14 = a.f14;
+        caliAdduction.n15 = a.f15;
     } else if (type == UDCAP_V1_HAND_CALI_TYPE_PROTRACT) {
-        // TODO improve accuracy
         caliProtract.captured = true;
-        caliProtract.h8 = lastAngle.f8;
-        caliProtract.h11 = lastAngle.f11;
-        caliProtract.h14 = lastAngle.f14;
+        caliProtract.h8 = a.f8;
+        caliProtract.h11 = a.f11;
+        caliProtract.h14 = a.f14;
     }
 }
 
