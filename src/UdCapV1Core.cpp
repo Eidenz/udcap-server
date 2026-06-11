@@ -846,8 +846,10 @@ void UdCapV1Core::runCalibration(UdCapV1DeviceCaliType type) {
         throw std::runtime_error("Core not initialized");
     }
     if (type == UdCapV1DeviceCaliType::UDCAP_V1_DEVICE_CALI_TYPE_HAND) {
-        if (caliStat != UDCAP_V1_HAND_CALI_STAT_NONE) {
-            throw std::runtime_error("Calibration already called");
+        // Allow re-calibrating from a completed state; only reject if one is
+        // already in progress.
+        if (caliStat != UDCAP_V1_HAND_CALI_STAT_NONE && caliStat != UDCAP_V1_HAND_CALI_STAT_COMPLETED) {
+            throw std::runtime_error("Calibration already in progress");
         }
         caliStat = UDCAP_V1_HAND_CALI_STAT_AUTO;
         memset(&caliFist, 0, sizeof(caliFist));

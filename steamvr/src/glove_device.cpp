@@ -37,12 +37,17 @@ bone_curl(const udcap_quat &q)
 	return 2.0f * std::acos(w);
 }
 
-// Per-finger curl 0..1 (1 = fist): average of the three bending joints.
+// Per-finger curl 0..1 (1 = fist) on the GUI/Monado scale (proximal bend /
+// MAX_BEND), remapped through the user's per-finger [min, max] range.
 static float
-finger_curl(const udcap_finger &f)
+finger_curl(const udcap_finger &f, float lo, float hi)
 {
-	float c = (bone_curl(f.proximal) + bone_curl(f.intermediate) + bone_curl(f.distal)) / 3.0f;
-	return clamp(c / 1.4f, 0.0f, 1.0f);
+	float c = bone_curl(f.proximal) / 1.35f; // matches the app's displayed curl
+	float range = hi - lo;
+	if (range < 0.01f) {
+		return clamp(c, 0.0f, 1.0f);
+	}
+	return clamp((c - lo) / range, 0.0f, 1.0f);
 }
 
 // Per-finger splay -1..1 from the proximal sideways rotation, scaled by the shm gain.
@@ -247,9 +252,12 @@ void GloveDevice::run_frame()
 
 	// Skeletal finger tracking (curl per finger + splay scaled by the shm gain).
 	const float splay_gain = shm_->raw() ? shm_->raw()->splay_gain : 1.0f;
-	const MyFingerCurls curls{finger_curl(h.skel.thumb), finger_curl(h.skel.index),
-	                          finger_curl(h.skel.middle), finger_curl(h.skel.ring),
-	                          finger_curl(h.skel.little)};
+	const MyFingerCurls curls{
+	    finger_curl(h.skel.thumb, h.curl_min[0], h.curl_max[0]),
+	    finger_curl(h.skel.index, h.curl_min[1], h.curl_max[1]),
+	    finger_curl(h.skel.middle, h.curl_min[2], h.curl_max[2]),
+	    finger_curl(h.skel.ring, h.curl_min[3], h.curl_max[3]),
+	    finger_curl(h.skel.little, h.curl_min[4], h.curl_max[4])};
 	const MyFingerSplays splays{finger_splay(h.skel.thumb, splay_gain), finger_splay(h.skel.index, splay_gain),
 	                            finger_splay(h.skel.middle, splay_gain), finger_splay(h.skel.ring, splay_gain),
 	                            finger_splay(h.skel.little, splay_gain)};
