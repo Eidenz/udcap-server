@@ -388,7 +388,7 @@ main(int argc, char **argv)
 			H.grip_finger = UDCAP_FINGER_GRIP; // average of middle+ring+little
 			H.trigger_min = 0.15f;
 			H.trigger_max = 0.85f;
-			H.grip_min = 0.15f;
+			H.grip_min = 0.6f;
 			H.grip_max = 0.85f;
 		}
 	}
