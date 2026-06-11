@@ -371,6 +371,8 @@ main(int argc, char **argv)
 		R.grip_rot_deg[2] = 75.0f;
 
 		g_shm->curl_gain = 1.5f; // full fist by default (also the maximum)
+		// Splay is correct (same path as opengloves); some OpenXR apps use it even
+		// though VRChat's hand-tracking ignores finger abduction.
 		g_shm->splay_gain = 1.0f;
 
 		// Per-hand input mapping defaults.
