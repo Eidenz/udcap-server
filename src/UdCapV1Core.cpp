@@ -591,6 +591,38 @@ void UdCapV1Core::parsePacket(const std::vector<uint8_t> &packetBuffer) {
                     double conLittle11 = _calibrationDataC[19];
                     double conLittle22 = _calibrationDataC[22];
 
+                    // --- Finger abduction (splay) -------------------------------------
+                    // sensor2Angle leaves the splay slots (_calibrationDataC[7/11/15/19])
+                    // at 0, so the drivers (which read the proximal quaternion's sideways
+                    // rotation) see no spread. But the raw channels f8/f11/f14 DO move when
+                    // the fingers spread -- confirmed by raw-sensor diagnostics -- and
+                    // calibration already records a "together" (protract) and "spread"
+                    // (adduction) reference for exactly those channels. Normalize each
+                    // between the two -> 0 (together)..1 (spread), scale to degrees, and feed
+                    // the splay slots. Per-finger mapping/sign is tunable here; the global
+                    // magnitude is the shm splay_gain the drivers already apply.
+                    if (caliProtract.captured && caliAdduction.captured) {
+                        auto splayNorm = [](double cur, double together, double spread) -> double {
+                            double range = spread - together;
+                            if (std::fabs(range) < 1.0) return 0.0;
+                            double n = (cur - together) / range;
+                            return n < 0.0 ? 0.0 : (n > 1.5 ? 1.5 : n);
+                        };
+                        constexpr double SPLAY_DEG = 20.0; // full-spread magnitude (pre-gain)
+                        double sIndex = splayNorm(lastAngle.f8, caliProtract.h8, caliAdduction.n8);
+                        double sRing = splayNorm(lastAngle.f11, caliProtract.h11, caliAdduction.n11);
+                        double sLittle = splayNorm(lastAngle.f14, caliProtract.h14, caliAdduction.n14);
+                        // Mapping: f8->index, f11->ring, f14->little (middle = reference, no
+                        // channel). Signs fan the fingers outward (confirmed in VR); index
+                        // fans opposite the ring/little. eulerToQuaternion negates the yaw for
+                        // the left hand, so flip the whole hand's splay to keep it fanning out.
+                        double hs = (target == UD_TARGET_LEFT_HAND) ? -1.0 : 1.0;
+                        conIndex11 = hs * SPLAY_DEG * sIndex;
+                        conRing11 = hs * -SPLAY_DEG * sRing;
+                        conLittle11 = hs * -SPLAY_DEG * sLittle;
+                        conMiddle11 = 0.0;
+                    }
+
                     packetSkeleton.skeletonQuaternion.indexFinger.proximal = eulerToQuaternion(conIndex22 + handOffset.indexFinger.proximal.x, 0 - conIndex11 + handOffset.indexFinger.proximal.y, 0 - conIndex1 + handOffset.indexFinger.proximal.z);
                     packetSkeleton.skeletonQuaternion.indexFinger.intermediate = eulerToQuaternion(0 + handOffset.indexFinger.intermediate.x, 0 + handOffset.indexFinger.intermediate.y, 0 - conIndex2 + handOffset.indexFinger.intermediate.z);
                     packetSkeleton.skeletonQuaternion.indexFinger.distal = eulerToQuaternion(0 + handOffset.indexFinger.distal.x, 0 + handOffset.indexFinger.distal.y, 0 - conIndex3 + handOffset.indexFinger.distal.z);

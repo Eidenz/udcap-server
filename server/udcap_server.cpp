@@ -460,6 +460,12 @@ main(int argc, char **argv)
 				if (p->udState == UD_INIT_STATE_LINKED)
 					linked->store(true);
 				break;
+			case CMD_DATA:
+				// DIAGNOSTIC: the 12 raw per-finger sensor channels (pre-sensor2Angle).
+				for (int k = 0; k < 12; k++) {
+					g_shm->raw_sensors[idx][k] = (float)p->angle[k];
+				}
+				break;
 			case CMD_SERIAL:
 				H.present = 1;
 				strncpy(H.glove_serial, p->deviceSerialNum.c_str(), sizeof(H.glove_serial) - 1);
