@@ -390,7 +390,7 @@ main(int argc, char **argv)
 			H.trigger_max = 0.85f;
 			H.grip_min = 0.6f;
 			H.grip_max = 0.85f;
-			H.stick_deadzone = 0.1f;
+			H.stick_deadzone = 0.0f;
 			H.trackpad_threshold = 0.1f;
 		}
 	}
