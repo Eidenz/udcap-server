@@ -188,13 +188,18 @@ DriverPose_t GloveDevice::GetPose()
 		return pose;
 	}
 
-	// controller = tracker pose, offset into the grip in the tracker's frame.
 	const HmdVector3d_t tpos = mat_position(tp.mDeviceToAbsoluteTracking);
 	const HmdQuaternion_t tori = mat_orientation(tp.mDeviceToAbsoluteTracking);
 
-	pose.qRotation = tori * euler_deg(h.offset_rot_deg[0], h.offset_rot_deg[1], h.offset_rot_deg[2]);
+	// controller orientation = tracker orientation + the alignment rotation.
+	const HmdQuaternion_t controller_ori =
+	    tori * euler_deg(h.offset_rot_deg[0], h.offset_rot_deg[1], h.offset_rot_deg[2]);
+	pose.qRotation = controller_ori;
 
-	const HmdVector3d_t rp = rotate(tori, {h.offset_pos[0], h.offset_pos[1], h.offset_pos[2]});
+	// Position offset is applied in the controller's OWN frame, so the alignment
+	// sliders move it along the controller you see in SteamVR (slide the tracker
+	// down the grip to your wrist to make the hand rotate in place).
+	const HmdVector3d_t rp = rotate(controller_ori, {h.offset_pos[0], h.offset_pos[1], h.offset_pos[2]});
 	pose.vecPosition[0] = tpos.v[0] + rp.v[0];
 	pose.vecPosition[1] = tpos.v[1] + rp.v[1];
 	pose.vecPosition[2] = tpos.v[2] + rp.v[2];
