@@ -146,7 +146,8 @@ struct CoreCtx
 	std::shared_ptr<UdCapV1Core> core;
 	std::string recv_sn;
 	std::shared_ptr<std::atomic_bool> linked = std::make_shared<std::atomic_bool>(false);
-	int idx = -1; // resolved hand slot once known
+	int idx = -1;      // resolved hand slot once known
+	int recv_idx = -1; // index into g_shm->receivers (this dongle)
 };
 
 // Execute a control-app command (currently the guided calibration steps) on all
@@ -185,8 +186,41 @@ remap01(float v, float lo, float hi)
 }
 
 static void
-handle_command(uint32_t code, std::vector<std::shared_ptr<CoreCtx>> &ctxs)
+handle_command(uint32_t code, int32_t arg, int32_t arg2, std::vector<std::shared_ptr<CoreCtx>> &ctxs)
 {
+	// Receiver-targeted commands (pairing / RF channel). cmd_arg selects the
+	// receiver; these act on one dongle, not all hands.
+	if (code == UDCAP_CMD_PAIR_START || code == UDCAP_CMD_PAIR_STOP || code == UDCAP_CMD_SET_CHANNEL) {
+		if (arg < 0 || arg >= (int)ctxs.size()) {
+			LOGP("[server] command %u: bad receiver index %d\n", code, arg);
+			return;
+		}
+		auto &core = ctxs[arg]->core;
+		try {
+			switch (code) {
+			case UDCAP_CMD_PAIR_START:
+				core->mcuStartPairing();
+				g_shm->receivers[arg].pair_state = UDCAP_PAIR_SEARCHING;
+				LOGP("[server] receiver %d: pairing started\n", arg);
+				break;
+			case UDCAP_CMD_PAIR_STOP:
+				core->mcuStopPairing();
+				if (g_shm->receivers[arg].pair_state == UDCAP_PAIR_SEARCHING)
+					g_shm->receivers[arg].pair_state = UDCAP_PAIR_IDLE;
+				LOGP("[server] receiver %d: pairing stopped\n", arg);
+				break;
+			case UDCAP_CMD_SET_CHANNEL:
+				core->mcuSetChannel((uint8_t)arg2);
+				g_shm->receivers[arg].channel = (uint32_t)arg2; // optimistic; refined by the response
+				LOGP("[server] receiver %d: set channel %d\n", arg, arg2);
+				break;
+			}
+		} catch (const std::exception &e) {
+			LOGP("[server] receiver command %u on %d threw: %s\n", code, arg, e.what());
+		}
+		return;
+	}
+
 	for (auto &c : ctxs) {
 		auto &core = c->core;
 		try {
@@ -239,7 +273,7 @@ start_autocal(std::vector<std::shared_ptr<CoreCtx>> &ctxs)
 	if (g_autocal_active) {
 		return;
 	}
-	handle_command(UDCAP_CMD_CALIB_START, ctxs); // runCalibration (sets STARTED)
+	handle_command(UDCAP_CMD_CALIB_START, 0, 0, ctxs); // runCalibration (sets STARTED)
 	g_shm->calib_state = UDCAP_CALIB_READY;       // ...but show a "get ready" first
 	g_autocal_active = true;
 	g_autocal_step = 0;
@@ -260,22 +294,22 @@ tick_autocal(std::vector<std::shared_ptr<CoreCtx>> &ctxs)
 		g_autocal_next_ns = now_ns() + AUTOCAL_HOLD_NS;
 		break;
 	case 1:
-		handle_command(UDCAP_CMD_CALIB_FIST, ctxs);
+		handle_command(UDCAP_CMD_CALIB_FIST, 0, 0, ctxs);
 		g_autocal_step = 2;
 		g_autocal_next_ns = now_ns() + AUTOCAL_HOLD_NS;
 		break;
 	case 2:
-		handle_command(UDCAP_CMD_CALIB_TOGETHER, ctxs);
+		handle_command(UDCAP_CMD_CALIB_TOGETHER, 0, 0, ctxs);
 		g_autocal_step = 3;
 		g_autocal_next_ns = now_ns() + AUTOCAL_HOLD_NS;
 		break;
 	case 3:
-		handle_command(UDCAP_CMD_CALIB_SPREAD, ctxs);
+		handle_command(UDCAP_CMD_CALIB_SPREAD, 0, 0, ctxs);
 		g_autocal_step = 4;
 		g_autocal_next_ns = now_ns() + 700000000ull; // brief pause before finalizing
 		break;
 	default:
-		handle_command(UDCAP_CMD_CALIB_COMPLETE, ctxs);
+		handle_command(UDCAP_CMD_CALIB_COMPLETE, 0, 0, ctxs);
 		g_autocal_active = false;
 		LOGP("[server] auto-calibration complete\n");
 		break;
@@ -442,12 +476,40 @@ main(int argc, char **argv)
 		auto ctx = std::make_shared<CoreCtx>();
 		ctx->pa = pa;
 		ctx->recv_sn = prober.getUDCapSerial();
+		ctx->recv_idx = (int)ctxs.size(); // pushed below; this is its future index
+		if (ctx->recv_idx < UDCAP_RECEIVER_MAX) {
+			udcap_receiver &R = g_shm->receivers[ctx->recv_idx];
+			R.present = 1;
+			R.linked = 0;
+			R.hand = 0xFFFFFFFFu;
+			R.pair_state = UDCAP_PAIR_IDLE;
+			R.channel = 0xFFFFFFFFu;
+			strncpy(R.serial, ctx->recv_sn.c_str(), sizeof(R.serial) - 1);
+		}
 		ctx->core = std::make_shared<UdCapV1Core>(pa);
 		auto core = ctx->core;
 		auto linked = ctx->linked;
 		auto *shadow_data = shadow.data();
 
-		auto u = core->listen([core, linked, shadow_data](std::shared_ptr<UdCapV1MCUPacket> p) {
+		int recv_idx = ctx->recv_idx;
+		auto u = core->listen([core, linked, shadow_data, recv_idx](std::shared_ptr<UdCapV1MCUPacket> p) {
+			// Receiver-level events first: valid even before a glove is bound (no
+			// hand yet) -- exactly the case while pairing an unbound receiver.
+			if (recv_idx >= 0 && recv_idx < UDCAP_RECEIVER_MAX) {
+				udcap_receiver &R = g_shm->receivers[recv_idx];
+				switch (p->commandType) {
+				case CMD_PAIRING:
+					if (p->pairing)
+						R.pair_state = UDCAP_PAIR_SEARCHING;
+					break;
+				case CMD_GET_CHANNEL:
+				case CMD_SET_CHANNEL:
+					R.channel = p->channel; // authoritative current channel
+					break;
+				default: break;
+				}
+			}
+
 			int idx = hand_index(core->getTarget());
 			if (idx < 0)
 				return; // hand not yet known
@@ -459,11 +521,12 @@ main(int argc, char **argv)
 				H.link = (uint32_t)p->udState;
 				if (p->udState == UD_INIT_STATE_LINKED)
 					linked->store(true);
-				break;
-			case CMD_DATA:
-				// DIAGNOSTIC: the 12 raw per-finger sensor channels (pre-sensor2Angle).
-				for (int k = 0; k < 12; k++) {
-					g_shm->raw_sensors[idx][k] = (float)p->angle[k];
+				if (recv_idx >= 0 && recv_idx < UDCAP_RECEIVER_MAX) {
+					udcap_receiver &R = g_shm->receivers[recv_idx];
+					R.hand = (uint32_t)idx;
+					R.linked = (p->udState == UD_INIT_STATE_LINKED) ? 1u : 0u;
+					if (R.linked && R.pair_state == UDCAP_PAIR_SEARCHING)
+						R.pair_state = UDCAP_PAIR_SUCCESS; // a glove just bound
 				}
 				break;
 			case CMD_SERIAL:
@@ -557,8 +620,11 @@ main(int argc, char **argv)
 		core->mcuGetSerialNum();
 		core->mcuGetFirmwareVersion();
 		core->mcuGetLinkState();
+		core->mcuGetChannel();
 		core->mcuStartData();
 	}
+
+	g_shm->receiver_count = (uint32_t)(ctxs.size() < UDCAP_RECEIVER_MAX ? ctxs.size() : UDCAP_RECEIVER_MAX);
 
 	if (ctxs.empty()) {
 		LOGP("[server] no UDCAP receivers found. Exiting.\n");
@@ -678,7 +744,7 @@ main(int argc, char **argv)
 				if (code == UDCAP_CMD_CALIB_CANCEL) {
 					g_autocal_active = false;
 				}
-				handle_command(code, ctxs);
+				handle_command(code, (int32_t)g_shm->cmd_arg, (int32_t)g_shm->cmd_arg2, ctxs);
 			}
 			__atomic_store_n(&g_shm->cmd_ack, cs, __ATOMIC_RELEASE);
 		}
@@ -707,6 +773,30 @@ main(int argc, char **argv)
 				last_count[i] = c;
 			}
 			last_fps_ns = now;
+
+			// RF channel + firmware: a receiver/glove only answers these once linked,
+			// so keep asking until we learn them (the callbacks stop us once they land;
+			// the early startup queries are dropped because the hand isn't known yet).
+			for (auto &c : ctxs) {
+				int ri = c->recv_idx;
+				if (ri < 0 || ri >= UDCAP_RECEIVER_MAX)
+					continue;
+				udcap_receiver &R = g_shm->receivers[ri];
+				if (!R.linked)
+					continue;
+				if (R.channel == 0xFFFFFFFFu) {
+					try {
+						c->core->mcuGetChannel();
+					} catch (...) {
+					}
+				}
+				if (R.hand < UDCAP_HAND_COUNT && g_shm->hands[R.hand].fw[0] == '\0') {
+					try {
+						c->core->mcuGetFirmwareVersion();
+					} catch (...) {
+					}
+				}
+			}
 
 			// Reconnection: a hand that was streaming and went quiet for >2.5s gets
 			// its data stream re-triggered (handles a dropped 2.4GHz link where the
