@@ -784,7 +784,10 @@ void UdCapV1Core::mcuStopData() {
 }
 
 void UdCapV1Core::mcuStartData() {
-    if (udState == UD_INIT_STATE_CONNECTED) {
+    // Allow restarting the stream from LINKED too, so the reconnect watchdog can
+    // recover a glove whose link survived but whose data stream stalled (e.g. after
+    // a channel change).
+    if (udState == UD_INIT_STATE_CONNECTED || udState == UD_INIT_STATE_LINKED) {
         std::vector<uint8_t> s;
         s.push_back(2);
         if (isEnterprise) {

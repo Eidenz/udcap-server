@@ -63,6 +63,9 @@ static int g_shm_fd = -1;
 // Per-hand packet counters -> FPS (computed in the main loop, consumed by the
 // publishing callback so the seqlock stays single-writer per hand).
 static std::atomic<uint32_t> g_pkt_count[UDCAP_HAND_COUNT];
+// Real hand-data frames only (skeleton packets), so the reconnect watchdog isn't
+// fooled by link-state / status replies into thinking the stream is alive.
+static std::atomic<uint32_t> g_data_count[UDCAP_HAND_COUNT];
 static std::atomic<float> g_fps[UDCAP_HAND_COUNT];
 
 static uint64_t
@@ -605,6 +608,7 @@ main(int argc, char **argv)
 				                 ? (cu[2] + cu[3] + cu[4]) / 3.0f
 				                 : cu[cfg.grip_finger < 5 ? cfg.grip_finger : 2];
 				H.grip = remap01(gsrc, cfg.grip_min, cfg.grip_max);
+				g_data_count[idx].fetch_add(1, std::memory_order_relaxed); // a genuine data frame
 				break;
 			}
 			default: break;
@@ -803,7 +807,7 @@ main(int argc, char **argv)
 			// dongle stops sending). The server keeps running, so the shm stays
 			// valid and Monado does not need restarting.
 			for (int i = 0; i < UDCAP_HAND_COUNT; i++) {
-				uint32_t c = g_pkt_count[i].load(std::memory_order_relaxed);
+				uint32_t c = g_data_count[i].load(std::memory_order_relaxed);
 				if (c != wd_count[i]) {
 					wd_count[i] = c;
 					wd_pkt_ns[i] = now;
