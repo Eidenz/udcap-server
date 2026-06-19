@@ -413,7 +413,10 @@ private:
     HandRotation handOffset;
     bool thumbOn = true;
     bool isSettingChannel = false;
-    float thumbFix[3] = { 0.1f, 0.3f, 1.2f };
+    // Thumb euler scales: [0]=curl (Z), [1]=splay (Y), [2]=metacarpal twist (X).
+    // Curl was 0.1 (crushed so the thumb barely closed); 1.0 = full-scale, like the
+    // other fingers. Tune these if the thumb over/under-curls or splays.
+    float thumbFix[3] = { 1.0f, 0.3f, 1.2f };
 
     std::chrono::system_clock::time_point powerButtonTimeout;
     bool powerBtnPressed = false;

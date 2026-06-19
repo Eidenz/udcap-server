@@ -657,9 +657,19 @@ void UdCapV1Core::parsePacket(const std::vector<uint8_t> &packetBuffer) {
                     packetSkeleton.skeletonQuaternion.littleFinger.intermediate = eulerToQuaternion(0 + handOffset.littleFinger.intermediate.x, 0 + handOffset.littleFinger.intermediate.y, 0 - conLittle2 + handOffset.littleFinger.intermediate.z);
                     packetSkeleton.skeletonQuaternion.littleFinger.distal = eulerToQuaternion(0 + handOffset.littleFinger.distal.x, 0 + handOffset.littleFinger.distal.y, 0 - conLittle3 + handOffset.littleFinger.distal.z);
 
-                    packetSkeleton.skeletonQuaternion.thumbFinger.proximal = eulerToQuaternion((0 - conThumb22) * thumbFix[2] + handOffset.thumbFinger.proximal.x, conThumb1 * thumbFix[0] + handOffset.thumbFinger.proximal.y, (0 - conThumb11) * thumbFix[1] + handOffset.thumbFinger.proximal.z);
-                    packetSkeleton.skeletonQuaternion.thumbFinger.intermediate = eulerToQuaternion(0 + handOffset.thumbFinger.intermediate.x, 0 - conThumb2 + handOffset.thumbFinger.intermediate.y, 0 + handOffset.thumbFinger.intermediate.z);
-                    packetSkeleton.skeletonQuaternion.thumbFinger.distal = eulerToQuaternion(0 + handOffset.thumbFinger.distal.x,0 - conThumb3 + handOffset.thumbFinger.distal.y, 0 + handOffset.thumbFinger.distal.z);
+                    // Thumb: encode flexion like a regular finger -- curl on Z (roll),
+                    // splay on Y (yaw). The old code put curl on Y (which the driver
+                    // reads as SPLAY) and crushed it to 10% via thumbFix[0]=0.1, while
+                    // the splay sat on Z (the curl axis). Net effect: the thumb only
+                    // closed when you splayed it, and barely closed when you actually
+                    // curled it. The driver derives the whole thumb from the proximal
+                    // bone (bone_curl = total rotation magnitude, splay = the .y term),
+                    // so getting proximal right is what matters; intermediate/distal are
+                    // re-synthesised driver-side and don't currently affect the output,
+                    // but are mirrored here for consistency.
+                    packetSkeleton.skeletonQuaternion.thumbFinger.proximal = eulerToQuaternion((0 - conThumb22) * thumbFix[2] + handOffset.thumbFinger.proximal.x, (0 - conThumb11) * thumbFix[1] + handOffset.thumbFinger.proximal.y, (0 - conThumb1) * thumbFix[0] + handOffset.thumbFinger.proximal.z);
+                    packetSkeleton.skeletonQuaternion.thumbFinger.intermediate = eulerToQuaternion(0 + handOffset.thumbFinger.intermediate.x, 0 + handOffset.thumbFinger.intermediate.y, 0 - conThumb2 + handOffset.thumbFinger.intermediate.z);
+                    packetSkeleton.skeletonQuaternion.thumbFinger.distal = eulerToQuaternion(0 + handOffset.thumbFinger.distal.x, 0 + handOffset.thumbFinger.distal.y, 0 - conThumb3 + handOffset.thumbFinger.distal.z);
 
                     callListenCallback(packetSkeleton);
                 }
