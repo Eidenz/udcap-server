@@ -426,6 +426,10 @@ std::unique_ptr<PacketRealignmentHelper> PortAccessor::popPacketRealignmentHelpe
     return std::move(packetRealignmentHelper);
 }
 
+void PortAccessor::requestReset() {
+    resetRequested.store(true);
+}
+
 void PortAccessor::startContinuousRead() {
     if (isOpen()) {
         if (continuousReadStartCount.load() > 0) {
@@ -436,6 +440,41 @@ void PortAccessor::startContinuousRead() {
         continuousReadRunning = true;
         continuousReadThread = std::thread([this] {
             while (continuousReadRunning) {
+                // Software-triggered reset: close then reopen the port, which drops
+                // and re-raises DTR/RTS and hardware-resets the CH340 receiver. Run
+                // here, on the socket's owning thread, so nothing else touches it.
+                if (!serialDevice.isHid && resetRequested.exchange(false)) {
+                    std::lock_guard lk(ioMutex);
+                    isOpenFlag = false; // stop tx/read from touching the socket
+                    try {
+                        if (serialPort->socket().is_open()) {
+                            serialPort->socket().cancel();
+                            serialPort->socket().close();
+                        }
+                    } catch (...) {
+                    }
+                    serialPort->io().stop();
+                    serialPort->io().restart();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250)); // hold reset asserted
+                    try {
+                        serialPort->socket().open(serialDevice.portName);
+#ifndef WIN32
+                        int nfd = serialPort->socket().native_handle();
+                        if (nfd >= 0) {
+                            ioctl(nfd, TIOCEXCL);
+                        }
+#endif
+                        serialPort->socket().set_option(boost::asio::serial_port_base::baud_rate(115200));
+                        isOpenFlag = true;
+                        isDead = false;
+                        callConnectionStateCallback(PORT_ACCESSOR_CONNECTION_STATE_CONNECTED);
+                    } catch (const std::exception &e) {
+                        isDead = true;
+                        isOpenFlag = false;
+                        callConnectionStateCallback(PORT_ACCESSOR_CONNECTION_STATE_DISCONNECTED);
+                    }
+                    continue;
+                }
                 if (isDead || !this->serialPort->socket().is_open()) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                 }

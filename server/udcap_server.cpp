@@ -61,11 +61,13 @@ static udcap_shm *g_shm = nullptr;
 static int g_shm_fd = -1;
 
 // Per-hand packet counters -> FPS (computed in the main loop, consumed by the
-// publishing callback so the seqlock stays single-writer per hand).
+// publishing callback so the seqlock stays single-writer per hand). g_pkt_count
+// also drives the reconnect watchdog: a powered-off glove makes its receiver stop
+// emitting entirely (verified -- the per-hand packet rate drops to 0), so the raw
+// packet rate is the liveness signal. It works regardless of calibration, unlike
+// skeleton frames, which only exist post-calibration -- the reason earlier
+// watchdog attempts never fired when running with --no-cal.
 static std::atomic<uint32_t> g_pkt_count[UDCAP_HAND_COUNT];
-// Real hand-data frames only (skeleton packets), so the reconnect watchdog isn't
-// fooled by link-state / status replies into thinking the stream is alive.
-static std::atomic<uint32_t> g_data_count[UDCAP_HAND_COUNT];
 static std::atomic<float> g_fps[UDCAP_HAND_COUNT];
 
 static uint64_t
@@ -449,6 +451,8 @@ main(int argc, char **argv)
 	std::vector<std::function<void()>> unlisten;
 	// core per hand slot, for haptic dispatch
 	std::shared_ptr<UdCapV1Core> core_by_hand[UDCAP_HAND_COUNT] = {nullptr, nullptr};
+	// receiver port per hand slot, for the watchdog's hardware-reset escalation
+	std::shared_ptr<PortAccessor> pa_by_hand[UDCAP_HAND_COUNT] = {nullptr, nullptr};
 
 	for (auto &path : ports) {
 		if (g_stop)
@@ -519,9 +523,12 @@ main(int argc, char **argv)
 			udcap_hand &H = shadow_data[idx];
 
 			switch (p->commandType) {
-			case CMD_LINK_STATE:
+			case CMD_LINK_STATE: {
+				uint32_t prev_link = H.link;
 				H.present = 1;
 				H.link = (uint32_t)p->udState;
+				if (H.link != prev_link)
+					LOGP("[server] hand %d link %u -> %u\n", idx, prev_link, H.link);
 				if (p->udState == UD_INIT_STATE_LINKED)
 					linked->store(true);
 				if (recv_idx >= 0 && recv_idx < UDCAP_RECEIVER_MAX) {
@@ -532,6 +539,7 @@ main(int argc, char **argv)
 						R.pair_state = UDCAP_PAIR_SUCCESS; // a glove just bound
 				}
 				break;
+			}
 			case CMD_SERIAL:
 				H.present = 1;
 				strncpy(H.glove_serial, p->deviceSerialNum.c_str(), sizeof(H.glove_serial) - 1);
@@ -608,7 +616,6 @@ main(int argc, char **argv)
 				                 ? (cu[2] + cu[3] + cu[4]) / 3.0f
 				                 : cu[cfg.grip_finger < 5 ? cfg.grip_finger : 2];
 				H.grip = remap01(gsrc, cfg.grip_min, cfg.grip_max);
-				g_data_count[idx].fetch_add(1, std::memory_order_relaxed); // a genuine data frame
 				break;
 			}
 			default: break;
@@ -715,6 +722,7 @@ main(int argc, char **argv)
 	uint64_t wd_pkt_ns[UDCAP_HAND_COUNT] = {now_ns(), now_ns()};
 	uint32_t wd_count[UDCAP_HAND_COUNT] = {0, 0};
 	uint64_t wd_nudge_ns[UDCAP_HAND_COUNT] = {0, 0};
+	uint64_t wd_reset_ns[UDCAP_HAND_COUNT] = {0, 0};
 	bool wd_active[UDCAP_HAND_COUNT] = {false, false};
 
 	while (!g_stop) {
@@ -778,6 +786,22 @@ main(int argc, char **argv)
 			}
 			last_fps_ns = now;
 
+			// Re-resolve which core serves which hand. A glove that wasn't linked
+			// during the 20s startup window (powered on after the server, or off at
+			// launch) still streams fine -- the data callback routes by target on
+			// its own -- but the one-shot startup binding would never pick it up,
+			// leaving it with no haptics and, crucially, no reconnect watchdog (the
+			// watchdog below keys off core_by_hand). Without this rebind such a glove
+			// can never recover from a power-cycle without a full server restart.
+			for (auto &c : ctxs) {
+				int hi = hand_index(c->core->getTarget());
+				if (hi >= 0) {
+					c->idx = hi;
+					core_by_hand[hi] = c->core;
+					pa_by_hand[hi] = c->pa;
+				}
+			}
+
 			// RF channel + firmware: a receiver/glove only answers these once linked,
 			// so keep asking until we learn them (the callbacks stop us once they land;
 			// the early startup queries are dropped because the hand isn't known yet).
@@ -806,21 +830,58 @@ main(int argc, char **argv)
 			// its data stream re-triggered (handles a dropped 2.4GHz link where the
 			// dongle stops sending). The server keeps running, so the shm stays
 			// valid and Monado does not need restarting.
+			//
+			// Liveness = raw packet rate. A powered-off glove makes its receiver go
+			// silent for that hand; the only packets that still trickle in are this
+			// loop's own link-state polls (~1 per 1.5s), so anything below a small
+			// floor over a ~500ms tick means "no glove". (~60-70 pkt/tick when live.)
 			for (int i = 0; i < UDCAP_HAND_COUNT; i++) {
-				uint32_t c = g_data_count[i].load(std::memory_order_relaxed);
-				if (c != wd_count[i]) {
-					wd_count[i] = c;
+				uint32_t c = g_pkt_count[i].load(std::memory_order_relaxed);
+				uint32_t delta = c - wd_count[i];
+				wd_count[i] = c;
+				if (delta > 10) {
 					wd_pkt_ns[i] = now;
 					wd_active[i] = true;
 				} else if (wd_active[i] && core_by_hand[i] && now - wd_pkt_ns[i] > 2500000000ull &&
 				           now - wd_nudge_ns[i] > 1500000000ull) {
 					wd_nudge_ns[i] = now;
-					LOGP("[server] hand %d quiet, re-triggering stream...\n", i);
-					try {
-						core_by_hand[i]->mcuGetLinkState();
-						core_by_hand[i]->mcuStartData();
-					} catch (const std::exception &e) {
-						LOGP("[server] reconnect nudge failed: %s\n", e.what());
+					bool port_open = pa_by_hand[i] && pa_by_hand[i]->isOpen();
+
+					// Soft nudge -- only meaningful while the serial port is still
+					// open, i.e. a transient 2.4GHz stall where the glove never left
+					// (a "mini disconnect"). Re-triggering the stream revives it
+					// without a disruptive reset. When the glove fully power-cycles the
+					// read errors out and the port goes dead; the nudge can't send
+					// anything then, so we skip straight to the hardware reset below.
+					if (port_open) {
+						LOGP("[server] hand %d quiet, re-triggering stream...\n", i);
+						try {
+							core_by_hand[i]->mcuGetLinkState();
+							// Stop -> start cycle, not a bare StartData: a receiver left
+							// with a wedged half-open stream needs the restart. Safe --
+							// we only get here after >2.5 s of no frames.
+							core_by_hand[i]->mcuStopData();
+							core_by_hand[i]->mcuStartData();
+						} catch (const std::exception &e) {
+							LOGP("[server] reconnect nudge failed: %s\n", e.what());
+						}
+					}
+
+					// Escalation: hardware-reset the receiver by toggling DTR/RTS
+					// (close+reopen its port) -- the one thing that makes it re-accept
+					// a power-cycled glove (it otherwise never notices the drop; link
+					// stays stale at 3). Fire immediately if the port is already dead
+					// (a power-cycle), or after ~6 s if a port-open nudge didn't revive
+					// the stream. Throttled so the receiver gets time to re-acquire.
+					if (pa_by_hand[i] && (!port_open || now - wd_pkt_ns[i] > 6000000000ull) &&
+					    now - wd_reset_ns[i] > 8000000000ull) {
+						wd_reset_ns[i] = now;
+						LOGP("[server] hand %d dead, hardware-resetting receiver...\n", i);
+						try {
+							pa_by_hand[i]->requestReset();
+						} catch (const std::exception &e) {
+							LOGP("[server] receiver reset failed: %s\n", e.what());
+						}
 					}
 				}
 			}

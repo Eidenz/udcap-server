@@ -129,13 +129,31 @@ std::vector<std::vector<uint8_t> > UdCapHandV1PacketRealignmentHelper::processPa
 }
 
 std::vector<double> udCapV1HandAutoCali(const double f[], const double n[], const double h[], float nn) {
+    // Normalize each joint between its open (n = spread capture) and closed
+    // (h = fist capture) reference, mapping open -> 0 and fist -> nn.
+    //
+    // This assumes the fist reading sits well above the open reading. For hands
+    // or gloves that don't fit perfectly, a joint's sensor may barely move, or
+    // the fist pose may have been captured mid-motion, so h - n can be tiny,
+    // zero, or slightly inverted. The old code then either hard-zeroed the joint
+    // (h <= n) -- leaving a permanently-straight, "undetected" finger -- or
+    // divided by a hair-thin span and produced wild, twitchy output. Both were
+    // reported as "fingers not detected after calibrating" on imperfectly
+    // fitting gloves.
+    //
+    // Fix: floor the span at a small positive minimum. A degenerate/inverted
+    // span is treated as the open direction with a conservative range, so the
+    // finger still responds proportionally instead of dying or exploding. The
+    // floor is well below the 25-unit fist-vs-open delta that completeCalibration
+    // already requires for a "significant" joint, so well-fitting gloves
+    // (span > 25) are unaffected; only marginal joints are rescued. A truly
+    // static joint (f stays at n) still maps to ~0 -- no spurious motion.
+    constexpr double MIN_SPAN = 15.0;
     std::vector<double> array(12);
     for (int i = 0; i < 12; i++) {
-        if (h[i] <= n[i]) {
-            array[i] = 0.0;
-        } else {
-            array[i] = (f[i] - n[i]) / (h[i] - n[i]) * (double) nn;
-        }
+        double span = h[i] - n[i];
+        if (span < MIN_SPAN) span = MIN_SPAN;
+        array[i] = (f[i] - n[i]) / span * (double) nn;
     }
     return array;
 }

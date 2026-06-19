@@ -86,11 +86,18 @@ public:
     std::function<void()> addConnectionCallback(std::function<void(PortAccessorConnectionState)>);
     void startContinuousRead();
     void stopContinuousRead();
+    // Ask the read thread to close and reopen the port on its next loop. That
+    // drops then re-raises DTR/RTS, which hardware-resets a CH340-based UDCAP
+    // receiver -- the same thing a full app restart does -- so a receiver left
+    // wedged after its glove power-cycled re-acquires the glove without a
+    // restart. The work runs on the read thread (sole owner of the socket).
+    void requestReset();
     void setWriteDelay(const uint64_t delay);
     std::function<void()> addOnceRawDataCallback(std::function<bool(std::shared_ptr<std::vector<uint8_t>>)>);
     void setPrintRxTxToStdOut(bool enable);
 private:
     bool isDead = false;
+    std::atomic_bool resetRequested{false};
     std::function<void()> unlistenHotPlugCallback;
     bool printRxTxToStdOut = false;
     std::atomic_uint32_t callbackFd = 0;
