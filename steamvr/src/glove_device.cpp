@@ -26,14 +26,19 @@ clamp(float v, float lo, float hi)
 	return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// Continuous rotation angle of one bone quaternion, in radians. Using
-// 2*atan2(|vec|, w) (not 2*acos(|w|)) keeps it monotonic past 180° so a hard
-// curl never folds back toward 0.
+// Flexion of one bone, in radians: the rotation about its roll (Z) axis, which is
+// where the core encodes curl. We project onto Z -- 2*atan2(|z|, w) -- rather than
+// taking the total rotation magnitude 2*atan2(|xyz|, w). The total magnitude also
+// absorbs the splay (encoded on Y): for q = Rz(curl)*Rx*Ry(splay), z = sin(c/2)cos(s/2)
+// and w = cos(c/2)cos(s/2), so the splay's cos(s/2) cancels in the Z projection but
+// not in the magnitude. With the old formula a pure splay returned the splay angle
+// AS curl -- the "splay shows up as a first-phalanx curl" bug. fabs keeps it valid
+// for both hands (the curl sign flips L/R) and monotonic past 180° (z stays one sign
+// across a full bend, so it never folds back toward 0).
 static float
 bone_curl(const udcap_quat &q)
 {
-	float v = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z);
-	return 2.0f * std::atan2(v, q.w);
+	return 2.0f * std::atan2(std::fabs(q.z), q.w);
 }
 
 // Per-finger curl 0..1 (1 = fist) on the GUI/Monado scale (proximal bend /
