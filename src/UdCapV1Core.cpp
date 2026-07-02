@@ -1195,6 +1195,36 @@ UdCapV1JoystickCaliStat UdCapV1Core::getJoystickCalibrationStatus() const {
     return joystickCaliStat;
 }
 
+UdCapV1CalibDiag UdCapV1Core::getCalibDiag() const {
+    // Expose the raw calibration references + the live smoothed reading for the
+    // 12 calibrated finger sensor channels (f4..f15). The fist reference for the
+    // splay channels (f8/f11/f14 -> indices 4/7/10) is the "together" protract
+    // capture, mirroring how udCapV1HandAutoCali / the splay decode read them.
+    UdCapV1CalibDiag d{};
+    d.valid = caliFist.captured && caliAdduction.captured && caliProtract.captured;
+    const double open[12] = {
+        caliAdduction.n4,  caliAdduction.n5,  caliAdduction.n6,  caliAdduction.n7,
+        caliAdduction.n8,  caliAdduction.n9,  caliAdduction.n10, caliAdduction.n11,
+        caliAdduction.n12, caliAdduction.n13, caliAdduction.n14, caliAdduction.n15,
+    };
+    const double fist[12] = {
+        caliFist.h4,     caliFist.h5,  caliFist.h6,      caliFist.h7,
+        caliProtract.h8, caliFist.h9,  caliFist.h10,     caliProtract.h11,
+        caliFist.h12,    caliFist.h13, caliProtract.h14, caliFist.h15,
+    };
+    const float live[12] = {
+        avgAngle.f4,  avgAngle.f5,  avgAngle.f6,  avgAngle.f7,
+        avgAngle.f8,  avgAngle.f9,  avgAngle.f10, avgAngle.f11,
+        avgAngle.f12, avgAngle.f13, avgAngle.f14, avgAngle.f15,
+    };
+    for (int i = 0; i < 12; i++) {
+        d.open[i] = (float) open[i];
+        d.fist[i] = (float) fist[i];
+        d.live[i] = live[i];
+    }
+    return d;
+}
+
 void UdCapV1Core::mcuSetChannel(uint8_t channel) {
     sendCommand(1, CommandType::CMD_SET_CHANNEL, { channel });
 }

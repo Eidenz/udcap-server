@@ -284,6 +284,18 @@ struct UdCapV1LastCaliData {
     UdCapV1HandCaliProtract caliProtract;
 };
 
+// Snapshot of the raw calibration internals for the 12 finger sensor channels
+// (raw sensors f4..f15, capture order), for a control-app debug/diagnostics page.
+// open = spread/adduction reference, fist = fist/together reference, live =
+// current smoothed reading. valid = all three poses have been captured. Channels
+// at indices 4, 7, 10 are splay (index/ring/little); the rest are flexion.
+struct UdCapV1CalibDiag {
+    bool valid;
+    float open[12];
+    float fist[12];
+    float live[12];
+};
+
 class UdCapV1Core {
 public:
     UdCapV1Core(std::shared_ptr<PortAccessor> portAccessor);
@@ -341,6 +353,10 @@ public:
     UdCapV1HandCaliStat getHandCalibrationStatus() const;
 
     UdCapV1JoystickCaliStat getJoystickCalibrationStatus() const;
+
+    // Raw calibration internals for a debug/diagnostics readout (see
+    // UdCapV1CalibDiag). Cheap; safe to poll every frame.
+    UdCapV1CalibDiag getCalibDiag() const;
 
     // Virtual Buttons
     void setTriggerButtonMin(float value);

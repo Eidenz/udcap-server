@@ -616,6 +616,19 @@ main(int argc, char **argv)
 				                 ? (cu[2] + cu[3] + cu[4]) / 3.0f
 				                 : cu[cfg.grip_finger < 5 ? cfg.grip_finger : 2];
 				H.grip = remap01(gsrc, cfg.grip_min, cfg.grip_max);
+
+				// Raw calibration diagnostics for the control-app debug page.
+				// These live outside the seqlock payload, so write them straight
+				// to the live shm (not the shadow) -- a torn float between poll
+				// frames is harmless for a diagnostic readout.
+				{
+					UdCapV1CalibDiag dg = core->getCalibDiag();
+					udcap_hand *L = &g_shm->hands[idx];
+					memcpy(L->cali_open, dg.open, sizeof(L->cali_open));
+					memcpy(L->cali_fist, dg.fist, sizeof(L->cali_fist));
+					memcpy(L->cali_live, dg.live, sizeof(L->cali_live));
+					L->cali_valid = dg.valid ? 1u : 0u;
+				}
 				break;
 			}
 			default: break;
