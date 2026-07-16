@@ -148,12 +148,26 @@ std::vector<double> udCapV1HandAutoCali(const double f[], const double n[], cons
     // already requires for a "significant" joint, so well-fitting gloves
     // (span > 25) are unaffected; only marginal joints are rescued. A truly
     // static joint (f stays at n) still maps to ~0 -- no spurious motion.
+    //
+    // The splay channels (indices 4/7/10 = f8/f11/f14) are exempt: their span
+    // is negative by design (h = "together" protract reading sits below the
+    // n = spread reading), so the vendor rule always zeroed them and the AR1
+    // weight matrices were tuned with those columns at 0. Flooring their span
+    // instead fed the model out-of-range values (clamped to [-20,120]) that
+    // bias other joints. Keep them at vendor behavior: zero unless the span is
+    // genuinely positive. Finger splay itself doesn't come from these slots --
+    // it is decoded separately from the raw f8/f11/f14 values.
     constexpr double MIN_SPAN = 15.0;
     std::vector<double> array(12);
     for (int i = 0; i < 12; i++) {
         double span = h[i] - n[i];
-        if (span < MIN_SPAN) span = MIN_SPAN;
-        array[i] = (f[i] - n[i]) / span * (double) nn;
+        bool isSplay = (i == 4 || i == 7 || i == 10);
+        if (isSplay) {
+            array[i] = span <= 0.0 ? 0.0 : (f[i] - n[i]) / span * (double) nn;
+        } else {
+            if (span < MIN_SPAN) span = MIN_SPAN;
+            array[i] = (f[i] - n[i]) / span * (double) nn;
+        }
     }
     return array;
 }

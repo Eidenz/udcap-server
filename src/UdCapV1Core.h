@@ -426,7 +426,11 @@ private:
     float gripMin = 0.5f;
     float trackpadMax = 1.0f;
     float trackpadMin = 0.5f;
-    HandRotation handOffset;
+    // Value-initialize: nothing in the server ever sets this (setHandOffset /
+    // loadPref are unused there), so without {} it is indeterminate heap memory
+    // added into every finger's euler angles -- random fingers pegged or
+    // reversed, different ones each boot.
+    HandRotation handOffset{};
     bool thumbOn = true;
     bool isSettingChannel = false;
     // Thumb euler scales: [0]=curl (Z), [1]=splay (Y), [2]=metacarpal twist (X).
