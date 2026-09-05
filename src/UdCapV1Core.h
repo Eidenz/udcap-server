@@ -38,6 +38,8 @@ enum UdCapV1StateMachine {
 };
 
 enum CommandType {
+    CMD_CONTROLLER_VERSION = -8,  // synthetic: controller module generation detected in the data stream
+    CMD_JOYSTICK_FW_VERSION = -7, // synthetic: Control Module 2.0 firmware (reply to the 0xA6 query)
     CMD_PORT_CONNECTION_STATE = -6,
     CMD_SKELETON_QUATERNION = -5,
     CMD_INPUT_BUTTON = -4,
@@ -45,7 +47,9 @@ enum CommandType {
     CMD_ANGLE = -2,
     CMD_READY = -1,
     CMD_DATA = 1,
-    CMD_VIBRATION = 5,
+    // Vendor SHAKE_CONTROLLER_COMMAND is 4 (5 is BATTERY_VOLTAGE_DATA). The
+    // community core sent 5 here; matched to the vendor driver 2026-09-05.
+    CMD_VIBRATION = 4,
     CMD_BATTERY = 5,
     CMD_SERIAL = 6,
     CMD_LINK_STATE = 7,
@@ -54,7 +58,11 @@ enum CommandType {
     CMD_SET_CHANNEL_DONE = 10,
     CMD_FW_VERSION = 11,
     CMD_PAIRING = 12,
-    CMD_STOP_DATA = 160
+    CMD_STOP_DATA = 160,
+    // Control Module 2.0 (vendor driver 0.1.8.6): on-device stick calibration and
+    // the 16-bit haptics command. Both go out in the normal 0x55AA framing.
+    CMD_CONTROLLER_CALIBRATION = 204,
+    CMD_VIBRATION_V2 = 206
 };
 
 struct UdCapV1JoystickData {
@@ -148,6 +156,11 @@ struct UdCapV1MCUPacket {
     HandQuaternion skeletonQuaternion {};
     bool pairing;
     PortAccessorConnectionState portConnectionState;
+    // Controller module generation seen in the data stream (1 = original A/B/
+    // stick module, 2 = Control Module 2.0). Set on CMD_INPUT_BUTTON packets.
+    uint8_t controllerVersion = 1;
+    // Firmware of a Control Module 2.0 (CMD_JOYSTICK_FW_VERSION).
+    std::string joystickFwVersion;
 };
 
 class UdCapHandV1PacketRealignmentHelper : public PacketRealignmentHelper {
@@ -159,9 +172,14 @@ public:
     std::vector<std::vector<uint8_t> > processPacket(const std::vector<uint8_t> &data) override;
 
 private:
+    void processA6Byte(uint8_t byte, std::vector<std::vector<uint8_t> > &out);
+
     std::vector<uint8_t> packetBuffer;
     uint32_t remainedLength = 0;
     volatile UdCapV1StateMachine stateMachine = NOOP;
+    // Control Module 2.0 frames (0xA6 ... 0x6A) interleaved on the same stream.
+    std::vector<uint8_t> a6Buffer;
+    int a6Length = -1;
 };
 
 
@@ -336,6 +354,26 @@ public:
 
     void mcuSendVibration(int index, float second, int strength);
 
+    // Richer haptics: amplitude 0..1 and (optional, 0 = default) frequency in Hz.
+    // Routes to the V2 command on a Control Module 2.0, else to mcuSendVibration.
+    void mcuSendHaptic(int index, float second, float amplitude, float freqHz);
+
+    // Control Module 2.0 haptics (vendor cmd 206): 16-bit strength / rate / time.
+    void mcuSendVibrationV2(uint16_t strength, uint16_t rateHz, uint16_t timeMs);
+
+    // Control Module 2.0 on-device stick calibration (vendor cmd 204):
+    // 1 = capture centre, 2 = start range capture, 3 = stop range capture.
+    void mcuControllerCalibration(uint8_t type);
+
+    // Ask a Control Module 2.0 for its own firmware version (0xA6 query).
+    void mcuGetJoystickFirmwareVersion();
+
+    // 1 = original module, 2 = Control Module 2.0 (from the live data stream).
+    uint8_t getControllerVersion() const;
+
+    // Control Module 2.0 firmware, "" until answered (or on a 1.0 module).
+    std::string getJoystickFirmwareVersion() const;
+
     void runCalibration(UdCapV1DeviceCaliType type);
 
     void captureCalibrationData(UdCapV1HandCaliType type);
@@ -386,6 +424,15 @@ public:
 
 private:
     void parsePacket(const std::vector<uint8_t> &);
+
+    void parseJoystickFrame(const std::vector<uint8_t> &frame);
+
+    void sendHapticV2(float amplitude, float freqHz, float second);
+
+    uint8_t controllerVersion = 1;
+    bool controllerVersionAnnounced = false; // CMD_CONTROLLER_VERSION sent for the current link
+    std::string joystickFwVersion;
+    std::chrono::steady_clock::time_point lastJoystickFwQuery{};
 
     void callListenCallback(UdCapV1MCUPacket packet);
     std::atomic_uint32_t callbackFd = 0;

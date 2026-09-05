@@ -91,9 +91,10 @@ main(void)
 			}
 			double age_ms = ((double)t - (double)snap.timestamp_ns) / 1.0e6;
 			fprintf(stderr,
-			        "[%s] age=%6.0fms link=%u cal=%u | curl T=%.2f I=%.2f M=%.2f R=%.2f P=%.2f | "
+			        "[%s] age=%6.0fms link=%u cal=%u mod=%u | curl T=%.2f I=%.2f M=%.2f R=%.2f P=%.2f | "
 			        "A=%u B=%u menu=%u joyBtn=%u joy=(%+.2f %+.2f) trig=%.2f grip=%.2f\n",
-			        names[i], age_ms, snap.link, snap.calibrated, curl(snap.skel.thumb.proximal),
+			        names[i], age_ms, snap.link, snap.calibrated, snap.controller_version,
+			        curl(snap.skel.thumb.proximal),
 			        curl(snap.skel.index.proximal), curl(snap.skel.middle.proximal),
 			        curl(snap.skel.ring.proximal), curl(snap.skel.little.proximal), snap.btn_a, snap.btn_b,
 			        snap.btn_menu, snap.btn_joy, snap.joy_x, snap.joy_y, snap.trigger, snap.grip);

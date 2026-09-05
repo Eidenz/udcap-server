@@ -226,6 +226,49 @@ handle_command(uint32_t code, int32_t arg, int32_t arg2, std::vector<std::shared
 		return;
 	}
 
+	// Thumbstick calibration, per hand (cmd_arg = hand index, -1 = every hand).
+	if (code == UDCAP_CMD_JOY_CALIB_CENTER || code == UDCAP_CMD_JOY_CALIB_RANGE_START ||
+	    code == UDCAP_CMD_JOY_CALIB_RANGE_STOP) {
+		for (auto &c : ctxs) {
+			int idx = hand_index(c->core->getTarget());
+			if (idx < 0 || (arg >= 0 && idx != arg))
+				continue;
+			auto &core = c->core;
+			try {
+				if (core->getControllerVersion() == 2) {
+					// Control Module 2.0 calibrates on-device (vendor cmd 204).
+					uint8_t t = code == UDCAP_CMD_JOY_CALIB_CENTER        ? 1
+					            : code == UDCAP_CMD_JOY_CALIB_RANGE_START ? 2
+					                                                      : 3;
+					core->mcuControllerCalibration(t);
+				} else {
+					// Original module: software capture in the core. CENTER also
+					// arms the range capture, which then runs on every frame until
+					// STOP finalises it.
+					switch (code) {
+					case UDCAP_CMD_JOY_CALIB_CENTER:
+						core->runCalibration(UDCAP_V1_DEVICE_CALI_TYPE_JOYSTICK);
+						core->captureJoystickData(UDCAP_V1_JOYSTICK_CALI_TYPE_CENTER);
+						break;
+					case UDCAP_CMD_JOY_CALIB_RANGE_STOP:
+						core->completeCalibration(UDCAP_V1_DEVICE_CALI_TYPE_JOYSTICK);
+						break;
+					default: break;
+					}
+				}
+				LOGP("[server] stick calibration %u on %s (module %u.0)\n", code, hand_str(core->getTarget()),
+				     core->getControllerVersion());
+			} catch (const std::exception &e) {
+				LOGP("[server] stick calibration %u on %s threw: %s\n", code, hand_str(core->getTarget()),
+				     e.what());
+			}
+		}
+		g_shm->joy_calib_state = code == UDCAP_CMD_JOY_CALIB_CENTER        ? UDCAP_JOY_CALIB_CENTERED
+		                         : code == UDCAP_CMD_JOY_CALIB_RANGE_START ? UDCAP_JOY_CALIB_RANGING
+		                                                                   : UDCAP_JOY_CALIB_DONE;
+		return;
+	}
+
 	for (auto &c : ctxs) {
 		auto &core = c->core;
 		try {
@@ -529,6 +572,11 @@ main(int argc, char **argv)
 				H.link = (uint32_t)p->udState;
 				if (H.link != prev_link)
 					LOGP("[server] hand %d link %u -> %u\n", idx, prev_link, H.link);
+				if (p->udState == UD_INIT_STATE_NOT_CONNECT) {
+					// Module identity is re-detected on the next link.
+					H.controller_version = 0;
+					H.joystick_fw[0] = '\0';
+				}
 				if (p->udState == UD_INIT_STATE_LINKED)
 					linked->store(true);
 				if (recv_idx >= 0 && recv_idx < UDCAP_RECEIVER_MAX) {
@@ -547,8 +595,17 @@ main(int argc, char **argv)
 			case CMD_FW_VERSION:
 				strncpy(H.fw, p->fwVersion.c_str(), sizeof(H.fw) - 1);
 				break;
+			case CMD_CONTROLLER_VERSION:
+				LOGP("[server] hand %d controller module %u.0\n", idx, p->controllerVersion);
+				H.controller_version = p->controllerVersion;
+				break;
+			case CMD_JOYSTICK_FW_VERSION:
+				strncpy(H.joystick_fw, p->joystickFwVersion.c_str(), sizeof(H.joystick_fw) - 1);
+				LOGP("[server] hand %d control module 2.0 firmware %s\n", idx, H.joystick_fw);
+				break;
 			case CMD_BATTERY: H.battery = p->battery; break;
 			case CMD_INPUT_BUTTON:
+				H.controller_version = p->controllerVersion;
 				H.btn_a = p->button.btnA;
 				H.btn_b = p->button.btnB;
 				H.btn_menu = p->button.btnMenu;
@@ -747,10 +804,14 @@ main(int argc, char **argv)
 				int index = g_shm->hands[i].haptic_index;
 				float dur = g_shm->hands[i].haptic_duration_s;
 				int strength = g_shm->hands[i].haptic_strength;
+				float amp = g_shm->hands[i].haptic_amplitude; // v14; 0 = legacy strength only
+				float freq = g_shm->hands[i].haptic_freq_hz;
 				if (core_by_hand[i]) {
 					try {
-						core_by_hand[i]->mcuSendVibration(index < 0 ? 1 : index, dur,
-						                                  strength);
+						if (amp > 0.0f)
+							core_by_hand[i]->mcuSendHaptic(index < 0 ? 1 : index, dur, amp, freq);
+						else
+							core_by_hand[i]->mcuSendVibration(index < 0 ? 1 : index, dur, strength);
 					} catch (const std::exception &e) {
 						LOGP("[server] haptic send failed: %s\n", e.what());
 					}

@@ -11,6 +11,9 @@
 #include <Eigen/Geometry>
 #include <nlohmann/json.hpp>
 #include <fstream>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
 
 #define M_PI 3.14159265358979323846
 ImportAR1Linear(AR1LinearAA)
@@ -63,9 +66,40 @@ BoneQuaternion UdCapV1Core::eulerToQuaternion(double pitch, double yaw, double r
     return boneQ;
 }
 
+// Control Module 2.0 frames: 0xA6, length (BE16, counts cmd+err+payload), cmd,
+// err, payload..., crc16 (2), 0x6A. They share the receiver's byte stream with
+// the glove's 0xAA55 packets. Like the vendor driver, run a second, independent
+// matcher over every byte and hand complete frames up as their own packets
+// (first byte 0xA6); parsePacket dispatches on that. Structure only, no CRC
+// check -- the vendor doesn't verify these either, and the sole consumer
+// (firmware-version reply) is further gated on its own marker bytes.
+void UdCapHandV1PacketRealignmentHelper::processA6Byte(uint8_t byte, std::vector<std::vector<uint8_t> > &out) {
+    if (a6Buffer.empty()) {
+        if (byte == 0xA6) a6Buffer.push_back(byte);
+        return;
+    }
+    a6Buffer.push_back(byte);
+    if (a6Buffer.size() == 3) {
+        a6Length = (a6Buffer[1] << 8) | a6Buffer[2];
+        if (a6Length > 512) {
+            a6Buffer.clear();
+            a6Length = -1;
+        }
+        return;
+    }
+    if (a6Length < 0) return;
+    const size_t total = (size_t) a6Length + 6;
+    if (a6Buffer.size() >= total) {
+        if (a6Buffer.size() == total && byte == 0x6A) out.push_back(a6Buffer);
+        a6Buffer.clear();
+        a6Length = -1;
+    }
+}
+
 std::vector<std::vector<uint8_t> > UdCapHandV1PacketRealignmentHelper::processPacket(const std::vector<uint8_t> &data) {
     std::vector<std::vector<uint8_t> > packets;
     for (auto &byte: data) {
+        processA6Byte(byte, packets);
         switch (this->stateMachine) {
             case NOOP: {
                 if (byte == 170) {
@@ -259,7 +293,27 @@ std::string UdCapV1Core::getUDCapSerial() const {
     return udCapSerial;
 }
 
+void UdCapV1Core::parseJoystickFrame(const std::vector<uint8_t> &frame) {
+    // Reply to mcuGetJoystickFirmwareVersion. Vendor decode: frame[3] == 1 is the
+    // version command, frame[5] != 0 marks a valid answer, frame[6..9] = a.b.c.d.
+    if (frame.size() >= 10 && frame[3] == 1 && frame[5] != 0) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%u.%u.%u.%u", frame[6], frame[7], frame[8], frame[9]);
+        joystickFwVersion = buf;
+        UdCapV1MCUPacket packet{};
+        packet.address = 1;
+        packet.commandType = CommandType::CMD_JOYSTICK_FW_VERSION;
+        packet.controllerVersion = controllerVersion;
+        packet.joystickFwVersion = joystickFwVersion;
+        callListenCallback(packet);
+    }
+}
+
 void UdCapV1Core::parsePacket(const std::vector<uint8_t> &packetBuffer) {
+    if (!packetBuffer.empty() && packetBuffer[0] == 0xA6) {
+        parseJoystickFrame(packetBuffer);
+        return;
+    }
     if (packetBuffer.size() < 6) {
         return; // Invalid packet size
     }
@@ -299,6 +353,11 @@ void UdCapV1Core::parsePacket(const std::vector<uint8_t> &packetBuffer) {
         packet.commandType = CommandType::CMD_LINK_STATE;
         if (linkState == 0) {
             packet.udState = UdState::UD_INIT_STATE_NOT_CONNECT;
+            // The glove went away: forget which controller module it carried so
+            // the next link re-detects it (and re-queries a 2.0 module's firmware).
+            controllerVersion = 1;
+            controllerVersionAnnounced = false;
+            joystickFwVersion.clear();
 
             if (udState != UdState::UD_INIT_STATE_NOT_CONNECT) {
                 callListenCallback(packet);
@@ -446,8 +505,41 @@ void UdCapV1Core::parsePacket(const std::vector<uint8_t> &packetBuffer) {
         if (iData.size() > 16) {
             lastAngle.f16 = (float) (iData[16]);
             lastAngle.f17 = (float) (iData[17]);
-            lastAngle.f18 = (float) (iData[18]);
+            // Buttons word. Bit 0x80 flags the Control Module 2.0 (vendor driver
+            // 0.1.8.6: `isController20 = AngleDatas[14] >= 128`, then -128); strip
+            // it so the button bits below decode the same way for both modules.
+            uint16_t rawBtn = (uint16_t) iData[18];
+            bool is20 = (rawBtn & 0x80) != 0;
+            if (is20) rawBtn &= (uint16_t) ~0x80u;
+            lastAngle.f18 = (float) rawBtn;
             hasController = true;
+            // Sticky within a link: the glove's first frames after boot carry no
+            // module flag yet, and a flag dropout mid-stream would otherwise flip
+            // the A/B decode for a frame. Once 2.0 is seen, stay 2.0 until the
+            // link drops (which resets controllerVersion).
+            uint8_t ver = (is20 || controllerVersion == 2) ? 2 : 1;
+            if (!controllerVersionAnnounced || ver != controllerVersion) {
+                if (ver != controllerVersion) joystickFwVersion.clear();
+                controllerVersion = ver;
+                controllerVersionAnnounced = true;
+                // Announce independently of the button packets, which only flow
+                // once the hand is calibrated -- so a UI can show the module
+                // generation as soon as the glove streams.
+                UdCapV1MCUPacket verPacket{};
+                verPacket.address = packetBuffer[2];
+                verPacket.commandType = CommandType::CMD_CONTROLLER_VERSION;
+                verPacket.controllerVersion = controllerVersion;
+                callListenCallback(verPacket);
+            }
+            if (is20 && joystickFwVersion.empty()) {
+                // The 2.0 module answers a raw 0xA6 query with its own firmware
+                // version; ask every 2 s until it does (mirrors the vendor poll).
+                auto now = std::chrono::steady_clock::now();
+                if (now - lastJoystickFwQuery > std::chrono::seconds(2)) {
+                    lastJoystickFwQuery = now;
+                    mcuGetJoystickFirmwareVersion();
+                }
+            }
         }
 
         // Smoothed sensor reading (exponential moving average, ~10-frame window).
@@ -688,7 +780,18 @@ void UdCapV1Core::parsePacket(const std::vector<uint8_t> &packetBuffer) {
                     callListenCallback(packetSkeleton);
                 }
                 {
-                    if (joystickCaliStat == UDCAP_V1_JOYSTICK_CALI_STAT_CAPTURE_ZONE) {
+                    // Stick. The original module needs a software centre/range
+                    // (defaults, or the capture below). The Control Module 2.0
+                    // reports a factory-normalised stick (vendor constants: centre
+                    // 2000, span 0..4000) and calibrates on-device, see
+                    // mcuControllerCalibration -- the software capture is bypassed.
+                    bool emitJoy = false;
+                    float num = 0.0f, num2 = 0.0f;
+                    if (controllerVersion == 2) {
+                        num = (lastAngle.f16 - 2000.0f) / 2000.0f;
+                        num2 = (lastAngle.f17 - 2000.0f) / 2000.0f;
+                        emitJoy = true;
+                    } else if (joystickCaliStat == UDCAP_V1_JOYSTICK_CALI_STAT_CAPTURE_ZONE) {
                         if (lastAngle.f16 > 600.0) {
                             xMinData = std::min(xMinData, lastAngle.f16);
                         }
@@ -702,8 +805,11 @@ void UdCapV1Core::parsePacket(const std::vector<uint8_t> &packetBuffer) {
                             yMaxData = std::max(yMaxData, lastAngle.f17);
                         }
                     } else if (joystickCaliStat == UDCAP_V1_JOYSTICK_CALI_STAT_OK) {
-                        float num = (lastAngle.f16 - xCenterData) / ((xMaxData - xMinData) / 2.0);
-                        float num2 = (lastAngle.f17 - yCenterData) / ((yMaxData - yMinData) / 2.0);
+                        num = (lastAngle.f16 - xCenterData) / ((xMaxData - xMinData) / 2.0);
+                        num2 = (lastAngle.f17 - yCenterData) / ((yMaxData - yMinData) / 2.0);
+                        emitJoy = true;
+                    }
+                    if (emitJoy) {
                         if (num > 1.0) {
                             num = 1.0;
                         }
@@ -737,16 +843,27 @@ void UdCapV1Core::parsePacket(const std::vector<uint8_t> &packetBuffer) {
                     packetInputBtn.address = packetBuffer[2];
                     packetInputBtn.commandType = CommandType::CMD_INPUT_BUTTON;
                     uint16_t num3 = static_cast<uint16_t>(lastAngle.f18);
-                    constexpr uint16_t A_BIT     = 0x0001; // 0000 0000 0000 0001
-                    constexpr uint16_t B_BIT     = 0x0002; // 0000 0000 0000 0010
-                    constexpr uint16_t JOY_BIT   = 0x0004; // 0000 0000 0000 0100
-                    constexpr uint16_t POWER_BIT = 0x0008; // 0000 0000 0000 1000
-                    packetInputBtn.button.btnA = num3 & A_BIT;
-                    packetInputBtn.button.btnB = num3 & B_BIT;
-                    if (packetInputBtn.button.btnA && packetInputBtn.button.btnB) {
-                        packetInputBtn.button.btnMenu = true;
-                        packetInputBtn.button.btnA = false;
-                        packetInputBtn.button.btnB = false;
+                    constexpr uint16_t JOY_BIT    = 0x0004; // 0000 0000 0000 0100
+                    constexpr uint16_t POWER_BIT  = 0x0008; // 0000 0000 0000 1000
+                    constexpr uint16_t SYSTEM_BIT = 0x0010; // 0001 0000: 2.0 module's system button
+                    packetInputBtn.controllerVersion = controllerVersion;
+                    if (controllerVersion == 2) {
+                        // Control Module 2.0 (labelled buttons). Bit order follows the
+                        // vendor driver's decode: 0x02 = A, 0x01 = B. A and B stay
+                        // independent; "menu" is the dedicated system button.
+                        packetInputBtn.button.btnA = num3 & 0x0002;
+                        packetInputBtn.button.btnB = num3 & 0x0001;
+                        packetInputBtn.button.btnMenu = num3 & SYSTEM_BIT;
+                    } else {
+                        // Original module (unlabelled buttons): historical mapping,
+                        // A + B pressed together = menu.
+                        packetInputBtn.button.btnA = num3 & 0x0001;
+                        packetInputBtn.button.btnB = num3 & 0x0002;
+                        if (packetInputBtn.button.btnA && packetInputBtn.button.btnB) {
+                            packetInputBtn.button.btnMenu = true;
+                            packetInputBtn.button.btnA = false;
+                            packetInputBtn.button.btnB = false;
+                        }
                     }
                     packetInputBtn.button.btnJoyStick = num3 & JOY_BIT;
                     bool isPower = num3 & POWER_BIT;
@@ -861,9 +978,68 @@ void UdCapV1Core::mcuStopPairing() {
 
 void UdCapV1Core::mcuSendVibration(int index, float second, int strength) {
     if (index != 1 && index != 2) return;
-    float rSecond = ((second <= 0.04f) ? 0.04f : ((second > 2.5f) ? 2.5f : second));
     int rStrength = ((strength < 4) ? 4 : ((strength > 10) ? 10 : strength));
+    if (controllerVersion == 2) {
+        // Legacy 4..10 strength scale -> 0..1 amplitude for the V2 command.
+        sendHapticV2((float) (rStrength - 4) / 6.0f, 0.0f, second);
+        return;
+    }
+    float rSecond = ((second <= 0.04f) ? 0.04f : ((second > 2.5f) ? 2.5f : second));
     sendCommand(1, CommandType::CMD_VIBRATION, { (uint8_t)index, 0, (uint8_t)(rSecond * 100.0), (uint8_t)rStrength });
+}
+
+void UdCapV1Core::mcuSendHaptic(int index, float second, float amplitude, float freqHz) {
+    if (index != 1 && index != 2) return;
+    if (amplitude < 0.0f) amplitude = 0.0f;
+    if (amplitude > 1.0f) amplitude = 1.0f;
+    if (controllerVersion == 2) {
+        sendHapticV2(amplitude, freqHz, second);
+        return;
+    }
+    mcuSendVibration(index, second, 4 + (int) std::lround(amplitude * 6.0f));
+}
+
+void UdCapV1Core::sendHapticV2(float amplitude, float freqHz, float second) {
+    // Vendor mapping for its SteamVR haptic events: strength = 600 + amp * 400,
+    // rate = the event's frequency (its own test pulses use 100 Hz), time in ms.
+    uint16_t strength = (uint16_t) std::lround(600.0f + amplitude * 400.0f);
+    uint16_t rate = (freqHz > 0.0f) ? (uint16_t) std::lround(std::min(freqHz, 1000.0f)) : 100;
+    float ms = second * 1000.0f;
+    if (ms < 50.0f) ms = 50.0f;
+    if (ms > 2500.0f) ms = 2500.0f;
+    mcuSendVibrationV2(strength, rate, (uint16_t) std::lround(ms));
+}
+
+void UdCapV1Core::mcuSendVibrationV2(uint16_t strength, uint16_t rateHz, uint16_t timeMs) {
+    // SHAKE_CONTROLLER_COMMAND_V2 (206): [2, 0, strength LE16, rate LE16, time LE16].
+    // The payload order (strength, rate, time) differs from the vendor API's
+    // argument order (rate, strength, time) -- this is the on-wire one.
+    sendCommand(1, CommandType::CMD_VIBRATION_V2, {
+        2, 0,
+        (uint8_t)(strength & 0xFF), (uint8_t)(strength >> 8),
+        (uint8_t)(rateHz & 0xFF), (uint8_t)(rateHz >> 8),
+        (uint8_t)(timeMs & 0xFF), (uint8_t)(timeMs >> 8),
+    });
+}
+
+void UdCapV1Core::mcuControllerCalibration(uint8_t type) {
+    // Control Module 2.0 on-device stick calibration (vendor cmd 204):
+    // 1 = capture centre, 2 = start range capture, 3 = stop range capture.
+    sendCommand(1, CommandType::CMD_CONTROLLER_CALIBRATION, { type });
+}
+
+void UdCapV1Core::mcuGetJoystickFirmwareVersion() {
+    // Raw 0xA6-framed query the vendor driver writes verbatim; the module answers
+    // with an 0xA6 frame that lands in parseJoystickFrame.
+    this->portAccessor->writeData(std::vector<uint8_t>{0xA6, 0x01, 0x01, 0x01, 0x00, 0x00, 0x20, 0x6A});
+}
+
+uint8_t UdCapV1Core::getControllerVersion() const {
+    return controllerVersion;
+}
+
+std::string UdCapV1Core::getJoystickFirmwareVersion() const {
+    return joystickFwVersion;
 }
 
 void UdCapV1Core::setTriggerButtonMin(float value) {
@@ -1124,6 +1300,16 @@ void UdCapV1Core::completeCalibration(UdCapV1DeviceCaliType type) {
         caliPacket.isReady = true;
         callListenCallback(caliPacket);
     } else if (type == UdCapV1DeviceCaliType::UDCAP_V1_DEVICE_CALI_TYPE_JOYSTICK) {
+        // A range the stick was never moved through would divide by ~0 in the
+        // normalisation; fall back to the factory defaults instead.
+        if (xMaxData - xMinData < 400.0f || yMaxData - yMinData < 400.0f) {
+            xCenterData = Default_xCenterData;
+            yCenterData = Default_yCenterData;
+            xMinData = Default_xMinData;
+            yMinData = Default_yMinData;
+            xMaxData = Default_xMaxData;
+            yMaxData = Default_yMaxData;
+        }
         joystickCaliStat = UdCapV1JoystickCaliStat::UDCAP_V1_JOYSTICK_CALI_STAT_OK;
     }
 }
@@ -1162,6 +1348,10 @@ void UdCapV1Core::captureJoystickData(UdCapV1JoystickCaliType type) {
         if (type == UdCapV1JoystickCaliType::UDCAP_V1_JOYSTICK_CALI_TYPE_CENTER) {
             xCenterData = lastAngle.f16;
             yCenterData = lastAngle.f17;
+            // Grow the range out from the new centre so extremes left over from a
+            // previous capture (or the defaults) don't survive into this one.
+            xMinData = xMaxData = xCenterData;
+            yMinData = yMaxData = yCenterData;
             joystickCaliStat = UdCapV1JoystickCaliStat::UDCAP_V1_JOYSTICK_CALI_STAT_CAPTURE_ZONE;
         } else {
             throw std::runtime_error("Error on calibrate type with ZONE, now calibrating CENTER");
